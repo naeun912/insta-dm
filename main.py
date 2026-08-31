@@ -12,7 +12,7 @@ from config import (
     SESSION_PATH
 )
 from db import init_db, get_active_messages_map, save_new_messages, mark_message_deleted
-from telegram_notifier import alert_deleted_dm
+from telegram_notifier import alert_deleted_dm, send_telegram_message
 
 # Render 무료 웹 서비스 포트 바인딩용 헬스체크 서버
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -122,15 +122,25 @@ def monitor_loop():
     print("📌 원리: 도착한 메시지를 기록해 두었다가, 상대방이 전송 취소하면 텔레그램으로 알림을 보냅니다.")
     print("=" * 60)
     
-    # 헬스체크 웹서버 구동
     t = threading.Thread(target=start_health_check_server, daemon=True)
     t.start()
     
     init_db()
     cl = login_instagram()
     
-    print(f"👀 DM 모니터링을 정상적으로 시작합니다. (감시 주기: {CHECK_INTERVAL}초)")
-    print("💡 일반 DM은 텔레그램으로 보내지 않으며, '삭제된 DM'만 텔레그램 알림이 발송됩니다.")
+    # 로그인 완전 성공 및 구동 확인 메시지 텔레그램으로 전송!
+    success_text = (
+        "🎉 <b>[인스타그램 삭제 DM 감시 시스템 정상 작동 시작!]</b>\n\n"
+        "✅ 인스타그램 계정 로그인이 성공적으로 완료되었습니다.\n"
+        "👀 24시간 365일 실시간 모니터링이 시작되었습니다.\n\n"
+        "💡 <i>누군가 나에게 DM을 보냈다가 전송 취소(삭제)하면 즉시 이곳으로 알려드립니다!</i>"
+    )
+    send_telegram_message(success_text)
+    
+    print("\n" + "🎉" * 30)
+    print("✅ 인스타그램 로그인 정상 완료 및 텔레그램 연동 완료!")
+    print("👀 24시간 실시간 DM 감시 모드가 정상적으로 작동 중입니다.")
+    print("🎉" * 30 + "\n")
     
     first_run = True
     consecutive_errors = 0
@@ -139,14 +149,14 @@ def monitor_loop():
         try:
             current_messages = extract_thread_messages(cl, amount_threads=15)
             current_msg_ids = set(current_messages.keys())
-            consecutive_errors = 0  # 정상 수행 시 에러 카운트 리셋
+            consecutive_errors = 0
             
             stored_active_map = get_active_messages_map()
             stored_msg_ids = set(stored_active_map.keys())
             
             if first_run:
                 save_new_messages(list(current_messages.values()))
-                print(f"✅ 초기 메시지 {len(current_messages)}개 동기화 완료.")
+                print(f"✅ 초기 메시지 {len(current_messages)}개 동기화 완료. 정상 구동 중...")
                 first_run = False
             else:
                 new_msg_ids = current_msg_ids - stored_msg_ids
@@ -180,7 +190,6 @@ def monitor_loop():
         except Exception as e:
             consecutive_errors += 1
             print(f"⚠️ 메시지 확인 중 오류 발생 ({e}). 에러 횟수: {consecutive_errors}")
-            # 연속 에러 발생 시 알림 폭주 방지를 위한 대기 시간 증가
             sleep_time = min(CHECK_INTERVAL * (2 ** consecutive_errors), 300)
             print(f"⏳ 인스타 알림 보호를 위해 {sleep_time}초 동안 대기 후 다시 확인합니다.")
             time.sleep(sleep_time)
