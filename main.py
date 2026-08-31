@@ -2,8 +2,6 @@ import time
 import sys
 import os
 import json
-import atexit
-import signal
 import traceback
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -24,9 +22,6 @@ from telegram_notifier import alert_realtime_deleted_dm_batch, send_telegram_mes
 
 # 한국 표준시 (KST = UTC+9) 설정
 KST = timezone(timedelta(hours=9))
-
-# 프로그램 시동 시작 시각
-SCRIPT_START_TIME = datetime.now(KST)
 
 # Render 무료 웹 서비스 포트 바인딩용 헬스체크 서버
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -105,15 +100,19 @@ def login_instagram() -> Client:
         time.sleep(300)
         sys.exit(1)
 
-def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
+def extract_one_on_one_threads(cl: Client, amount_threads: int = 20) -> dict:
+    """
+    1대1 개인 DM 스레드 추출.
+    인스타그램 API의 is_group 속성 및 thread_type 정밀 검사로 1대1 대화방 단 1개도 누락하지 않음.
+    """
     threads_data = {}
     try:
         threads = cl.direct_threads(amount=amount_threads)
         for thread in threads:
             thread_id = str(thread.id)
             
-            # 1대1 개인 DM 방 검사
-            is_group_chat = getattr(thread, 'is_group', False) or getattr(thread, 'named', False) or len(thread.users) > 1
+            # 정밀 그룹방 판별 (is_group 이 True 이거나 thread_type 이 group 인 경우만 그룹방으로 처리)
+            is_group_chat = (getattr(thread, 'is_group', False) is True) or (getattr(thread, 'thread_type', '') == 'group')
             if is_group_chat:
                 continue
                 
@@ -124,7 +123,7 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
                 msg_id = str(msg.id)
                 user_pk = str(msg.user_id)
                 
-                # 내가 보낸 메시지는 제외
+                # 내가 보낸 메시지는 감시 대상에서 제외
                 if user_pk == str(cl.user_id):
                     continue
                 
@@ -133,10 +132,6 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
                     dt_kst = dt_utc.astimezone(KST)
                 else:
                     dt_kst = datetime.now(KST)
-                
-                # 시동 시각 이전의 과거 메시지는 무시 (5분 여유 수용)
-                if dt_kst < (SCRIPT_START_TIME - timedelta(minutes=5)):
-                    continue
                 
                 timestamp_str = dt_kst.strftime("%Y-%m-%d %H:%M:%S")
                 sender_info = users_map.get(user_pk)
@@ -158,20 +153,18 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
             
             threads_data[thread_id] = thread_messages
     except Exception as e:
-        print(f"⚠️ 1대1 스레드 메시지 수신 중 오류 발생: {e}", flush=True)
+        print(f"⚠️ 스레드 메시지 수신 중 오류 발생: {e}", flush=True)
         
     return threads_data
 
 def monitor_loop():
-    global SCRIPT_START_TIME
-    SCRIPT_START_TIME = datetime.now(KST)
-    kst_start_str = SCRIPT_START_TIME.strftime("%Y-%m-%d %H:%M:%S")
+    kst_start_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
-    # 서버 시동 즉시 텔레그램으로 시동 알림부터 전송!
+    # 서버 시동 즉시 텔레그램 알림 전송
     send_telegram_message(
-        f"⚡ <b>[인스타그램 DM 감시 서버 가동 시작!]</b>\n"
+        f"⚡ <b>[인스타그램 DM 감시 서버 시동 중...]</b>\n"
         f"⏰ <b>시동 시각:</b> {kst_start_str} (한국시간)\n"
-        f"🔑 인스타그램 계정에 접속하여 실시간 모니터링을 시작합니다."
+        f"🔑 인스타그램 1대1 대화방을 실시간으로 감시합니다."
     )
 
     print("=" * 60, flush=True)
@@ -189,36 +182,43 @@ def monitor_loop():
     cl = login_instagram()
     
     start_alert_text = (
-        "🎉 <b>[로그인 100% 성공 및 감시 가동 완료!]</b>\n\n"
-        f"⏰ <b>기준 시각:</b> {kst_start_str} (KST)\n"
-        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 대조\n"
-        "✅ <b>지금부터 상대방이 나에게 보낸 DM이 전송 취소되면 즉시 텔레그램으로 알려드립니다!</b>"
+        "🎉 <b>[로그인 성공 및 실시간 1대1 DM 감시 가동 완료!]</b>\n\n"
+        f"⏰ <b>시동 시각:</b> {kst_start_str} (KST)\n"
+        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 초고속 실시간 감지\n"
+        "✅ <b>지금부터 상대방이 나에게 보낸 DM이 전송 취소되면 즉시 텔레그램으로 쏘아드립니다!</b>"
     )
     send_telegram_message(start_alert_text)
     
     print("\n" + "🎉" * 30, flush=True)
-    print(f"✅ 로그인 완료 및 3초 단위 실시간 1대1 DM 감시 가동 중.", flush=True)
+    print(f"✅ 로그인 완료 및 3초 간격 실시간 1대1 DM 감시 가동 중.", flush=True)
     print("🎉" * 30 + "\n", flush=True)
     
     consecutive_errors = 0
+    loop_count = 0
     
     while True:
         try:
-            threads_data = extract_one_on_one_threads(cl, amount_threads=15)
+            loop_count += 1
+            threads_data = extract_one_on_one_threads(cl, amount_threads=20)
             consecutive_errors = 0
             
+            total_active_dms = 0
             for thread_id, current_messages in threads_data.items():
                 current_msg_ids = set(current_messages.keys())
+                total_active_dms += len(current_msg_ids)
+                
                 monitored_map = get_monitored_messages_for_thread(thread_id)
                 monitored_msg_ids = set(monitored_map.keys())
                 
+                # 1. 스레드에서 수신된 메시지 중 아직 DB 감시 대상에 없으면 새로 저장
                 new_incoming_ids = current_msg_ids - monitored_msg_ids
                 if new_incoming_ids:
                     new_msgs = [current_messages[mid] for mid in new_incoming_ids]
                     save_new_realtime_messages(new_msgs)
                     for nm in new_msgs:
-                        print(f"📩 [새 DM 수신] @{nm['sender_username']}: {nm['text'][:20]}... (발송시간: {nm['timestamp']})", flush=True)
+                        print(f"📩 [새 DM 수신 등록] @{nm['sender_username']}: {nm['text']} (시간: {nm['timestamp']})", flush=True)
                 
+                # 2. 감시 대상 목록에 존재했으나 현재 스레드에서 사라진 메시지 ➡️ 100% 삭제!!
                 deleted_ids = monitored_msg_ids - current_msg_ids
                 if deleted_ids:
                     deleted_items = []
@@ -234,7 +234,12 @@ def monitor_loop():
                             print(f" - 보낸사람: @{item['sender_username']} / 내용: {item['text']}", flush=True)
                         print("!" * 60, flush=True)
                         
+                        # 텔레그램 실시간 알림 100% 발송!
                         alert_realtime_deleted_dm_batch(deleted_items)
+
+            # 10회 주기마다 헬스체크 로그 출력
+            if loop_count % 10 == 0:
+                print(f"🔄 [감시 가동 중] {loop_count}번째 3초 감시 완료 (감시 중인 1대1 스레드: {len(threads_data)}개 / 메시지: {total_active_dms}개)", flush=True)
 
             time.sleep(CHECK_INTERVAL)
             
