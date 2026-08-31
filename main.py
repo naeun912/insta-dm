@@ -2,8 +2,6 @@ import time
 import sys
 import os
 import json
-import atexit
-import signal
 import traceback
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -52,31 +50,12 @@ def start_telegram_command_listener():
         except Exception:
             time.sleep(2)
 
-def log_system_exit(reason="알 수 없음"):
-    """프로그램 종료 직전 상세 로그 및 텔레그램 알림"""
-    kst_now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-    msg = f"🛑 [시스템 종료 알림] 시각: {kst_now} (KST) / 원인: {reason}"
-    print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
-    try:
-        send_telegram_message(f"⚠️ <b>[감시 시스템 종료]</b>\n⏰ <b>시간:</b> {kst_now} (KST)\n📌 <b>원인:</b> {reason}")
-    except Exception:
-        pass
-
-def sig_handler(signum, frame):
-    log_system_exit(f"시그널 수신 ({signum}) - 서버 재배포/중지")
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, sig_handler)
-signal.signal(signal.SIGINT, sig_handler)
-atexit.register(lambda: log_system_exit("정상 종료 또는 프로세스 중단"))
-
 # instagrapi Import
 try:
     from instagrapi import Client
     from instagrapi.exceptions import TwoFactorRequired, LoginRequired
 except ImportError as e:
-    err = f"instagrapi 라이브러리가 설치되지 않았습니다 ({e})."
-    log_system_exit(err)
+    print(f"❌ instagrapi 라이브러리가 설치되지 않았습니다 ({e}).", flush=True)
     sys.exit(1)
 
 def login_instagram() -> Client:
@@ -84,7 +63,7 @@ def login_instagram() -> Client:
     cl = Client()
     cl.request_timeout = 15
     
-    # 0. INSTAGRAM_SESSION_ID 최우선 사용
+    # 0. INSTAGRAM_SESSION_ID 최우선 사용 (2FA 및 로그인 알림 100% 차단)
     session_id = os.getenv("INSTAGRAM_SESSION_ID", "").strip()
     if session_id:
         try:
@@ -95,7 +74,7 @@ def login_instagram() -> Client:
         except Exception as e:
             err_details = traceback.format_exc()
             print(f"❌ sessionid 쿠키 로그인 실패:\n{err_details}", flush=True)
-            log_system_exit(f"sessionid 로그인 실패 ({e})")
+            print("⚠️ 연속 로그인 알림 방지를 위해 5분간 대기합니다.", flush=True)
             time.sleep(300)
             sys.exit(1)
 
@@ -113,8 +92,7 @@ def login_instagram() -> Client:
 
     # 2. 비밀번호 신규 로그인 시도
     if not INSTAGRAM_USERNAME or not INSTAGRAM_PASSWORD:
-        err_msg = "INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD / INSTAGRAM_SESSION_ID 중 설정이 누락되었습니다."
-        log_system_exit(err_msg)
+        print("❌ INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD / INSTAGRAM_SESSION_ID 중 설정이 누락되었습니다.", flush=True)
         sys.exit(1)
         
     print(f"🔑 인스타그램 계정({INSTAGRAM_USERNAME}) 신규 로그인 시도 중...", flush=True)
@@ -126,7 +104,6 @@ def login_instagram() -> Client:
     except Exception as e:
         err_details = traceback.format_exc()
         print(f"\n❌ 로그인 시도 실패 상세:\n{err_details}", flush=True)
-        log_system_exit(f"로그인 시도 실패 ({e})")
         time.sleep(300)
         sys.exit(1)
 
@@ -218,7 +195,7 @@ def monitor_loop():
     send_telegram_message(start_alert_text)
     
     print("\n" + "🎉" * 30, flush=True)
-    print(f"✅ 로그인 및 초기화 완료 ({kst_start_str} KST). 3초 간격으로 다중 삭제 완벽 지원 모드 가동 중.", flush=True)
+    print(f"✅ 로그인 및 초기화 완료 ({kst_start_str} KST). 3초 간격으로 무한 감시 가동 중.", flush=True)
     print("🎉" * 30 + "\n", flush=True)
     
     consecutive_errors = 0
@@ -256,13 +233,12 @@ def monitor_loop():
                             print(f" - 보낸사람: @{item['sender_username']} / 내용: {item['text']}", flush=True)
                         print("!" * 60, flush=True)
                         
-                        # 1개든 여러 개든 한 묶음으로 깔끔하게 실시간 발송!
                         alert_realtime_deleted_dm_batch(deleted_items)
 
             time.sleep(CHECK_INTERVAL)
             
         except KeyboardInterrupt:
-            log_system_exit("사용자 수동 중단 (KeyboardInterrupt)")
+            print("\n👋 사용자에 의해 모니터링이 중단되었습니다.")
             break
         except Exception as e:
             consecutive_errors += 1
@@ -275,4 +251,4 @@ if __name__ == "__main__":
     try:
         monitor_loop()
     except Exception as fatal_e:
-        log_system_exit(f"치명적 오류 발생 ({fatal_e})\n{traceback.format_exc()}")
+        print(f"❌ 치명적 오류 발생: {fatal_e}\n{traceback.format_exc()}", flush=True)
