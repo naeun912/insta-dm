@@ -29,6 +29,8 @@ instagrapi.extractors.extract_media_v1_xma = safe_extract_media_v1_xma
 
 from db import (
     init_db,
+    set_setting,
+    get_setting,
     save_baseline_messages,
     save_new_incoming_messages,
     get_all_active_unreported_messages,
@@ -39,10 +41,10 @@ from telegram_notifier import alert_realtime_deleted_dm_batch, send_telegram_mes
 # 한국 표준시 (KST = UTC+9) 설정
 KST = timezone(timedelta(hours=9))
 
-# 프로그램 시동 시작 시각
+# 전역 기준 시동 시각 (DB 보존)
 SCRIPT_START_TIME = datetime.now(KST)
 
-# Render 무료 웹 서비스 포트 바인딩용 헬스체크 서버
+# Render 무료 웹 서비스 포트 바인딩용 헬스체크 서버 (UptimeRobot 5분 모니터링 대응)
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -112,6 +114,7 @@ def get_session_clients() -> list:
 def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 20, is_initial: bool = False) -> dict:
     """
     해당 계정의 1대1 및 단체방 포함 모든 direct_threads 스레드 메시지 수집.
+    is_initial = False 인 실시간 루프에서는 최초 시동 시각(SCRIPT_START_TIME) 이전 발송된 일반 메시지는 100% 무시!
     """
     threads_data = {}
     try:
@@ -144,8 +147,8 @@ def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 
                 else:
                     dt_kst = datetime.now(KST)
                 
-                # 시동 시각 이전 과거 메시지는 실시간 루프에서 100% 무시
-                if not is_initial and dt_kst < (SCRIPT_START_TIME - timedelta(seconds=15)):
+                # ⭐ [날짜/시간 100% 차단]: 최초 시동 시각(SCRIPT_START_TIME) 이전 메시지는 절대 감시/삭제 대상으로 삼지 않음!
+                if not is_initial and dt_kst < (SCRIPT_START_TIME - timedelta(seconds=10)):
                     continue
                 
                 timestamp_str = dt_kst.strftime("%Y-%m-%d %H:%M:%S")
@@ -188,12 +191,27 @@ def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 
 
 def monitor_loop():
     global SCRIPT_START_TIME
-    SCRIPT_START_TIME = datetime.now(KST)
+    init_db()
+    
+    # DB에 보존된 최초 시동 시간 확인 또는 새로 설정
+    saved_time_str = get_setting("INITIAL_BASELINE_TIME")
+    now_kst = datetime.now(KST)
+    
+    if saved_time_str:
+        try:
+            SCRIPT_START_TIME = datetime.strptime(saved_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST)
+        except Exception:
+            SCRIPT_START_TIME = now_kst
+            set_setting("INITIAL_BASELINE_TIME", now_kst.strftime("%Y-%m-%d %H:%M:%S"))
+    else:
+        SCRIPT_START_TIME = now_kst
+        set_setting("INITIAL_BASELINE_TIME", now_kst.strftime("%Y-%m-%d %H:%M:%S"))
+        
     kst_start_str = SCRIPT_START_TIME.strftime("%Y-%m-%d %H:%M:%S")
 
     print("=" * 60, flush=True)
     print("🚀 인스타그램 다중 계정 실시간 DM 삭제 감시 시스템 구동 시작!", flush=True)
-    print(f"📌 시동 시각: {kst_start_str} (KST)", flush=True)
+    print(f"📌 감시 영구 기준 시각(Baseline): {kst_start_str} (KST)", flush=True)
     print("=" * 60, flush=True)
     
     t_web = threading.Thread(target=start_health_check_server, daemon=True)
@@ -202,7 +220,6 @@ def monitor_loop():
     t_cmd = threading.Thread(target=start_telegram_command_listener, daemon=True)
     t_cmd.start()
     
-    init_db()
     clients = get_session_clients()
     
     if not clients:
@@ -212,7 +229,7 @@ def monitor_loop():
     account_names_str = ", ".join([f"@{acc}" for acc, _ in clients])
     
     # 1단계: 시동 시점 각 계정 수신함 기존 메시지 동기화 (Baseline)
-    print(f"🔄 시동 시각({kst_start_str}) 기준 기존 메시지들을 감시 기준점(Baseline)으로 저장합니다...", flush=True)
+    print(f"🔄 감시 기준 시각({kst_start_str}) 이전 메시지들을 감시 제외(Baseline)로 등록합니다...", flush=True)
     initial_msg_ids = set()
     all_initial_msgs = []
     
@@ -223,14 +240,14 @@ def monitor_loop():
             initial_msg_ids.update(msgs.keys())
             
     save_baseline_messages(all_initial_msgs)
-    print(f"✅ 총 {len(clients)}개 계정({account_names_str}) 기존 메시지 총 {len(initial_msg_ids)}개 동기화 완료!", flush=True)
+    print(f"✅ 총 {len(clients)}개 계정({account_names_str}) 기존 과거 메시지 감시 제외(Baseline) 등록 완료!", flush=True)
 
     start_alert_text = (
-        "🎉 <b>[인스타그램 다중 계정 DM 삭제 감시 가동 완료!]</b>\n\n"
-        f"⏰ <b>시동 시각:</b> {kst_start_str} (KST)\n"
+        "🎉 <b>[인스타그램 DM 삭제 감시 가동 완료!]</b>\n\n"
+        f"⏰ <b>감시 영구 기준 시각:</b> {kst_start_str} (KST)\n"
         f"📱 <b>감시 계정 ({len(clients)}개):</b> {account_names_str}\n"
-        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 순환 감시\n"
-        "✅ <b>쿠키 만료 텔레그램 메시지 알림 기능 탑재 완료!</b>"
+        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 순환 감시 (5분 핑 대응 완비)\n"
+        "✅ <b>서버 재시작 및 5분 핑에도 과거 메시지 오탐지 0% 보장!</b>"
     )
     send_telegram_message(start_alert_text)
     

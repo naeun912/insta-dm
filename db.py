@@ -8,7 +8,7 @@ def get_connection():
     return conn
 
 def init_db():
-    """데이터베이스 테이블 초기화 및 스키마 자동 마이그레이션"""
+    """데이터베이스 테이블 초기화 및 설정 스키마 마이그레이션"""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -26,6 +26,13 @@ def init_db():
                 is_deleted INTEGER DEFAULT 0,
                 reported INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
             )
         """)
         conn.commit()
@@ -46,6 +53,21 @@ def init_db():
         # 더미 테스트 데이터 자동 청소
         cursor.execute("DELETE FROM messages WHERE message_id LIKE 'test%' OR message_id LIKE 'base%' OR sender_username IN ('olduser', 'friend_user', 'testuser')")
         conn.commit()
+
+def set_setting(key: str, value: str):
+    """설정 값 저장"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+        conn.commit()
+
+def get_setting(key: str) -> Optional[str]:
+    """설정 값 조회"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        return row["value"] if row else None
 
 def save_baseline_messages(messages: List[dict]):
     """시동 시점 기존 과거 메시지는 reported=1 로 저장하여 알림 대상에서 완벽 제외"""
