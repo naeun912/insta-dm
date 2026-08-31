@@ -8,10 +8,11 @@ BASE_DIR = Path(__file__).resolve().parent
 # Load .env file
 load_dotenv(BASE_DIR / ".env")
 
-# Instagram Credentials
+# Instagram Credentials (다중 계정 콤마 구분 지원)
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
 INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "")
 INSTAGRAM_SESSION_ID = os.getenv("INSTAGRAM_SESSION_ID", "")
+INSTAGRAM_SESSION_ID_2 = os.getenv("INSTAGRAM_SESSION_ID_2", "")
 
 # Telegram Bot Settings
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")

@@ -14,6 +14,7 @@ def init_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 message_id TEXT PRIMARY KEY,
+                my_account TEXT DEFAULT '',
                 thread_id TEXT,
                 thread_title TEXT,
                 sender_id TEXT,
@@ -30,6 +31,7 @@ def init_db():
         conn.commit()
 
         for col_name, col_type in [
+            ("my_account", "TEXT DEFAULT ''"),
             ("thread_title", "TEXT DEFAULT ''"),
             ("is_group", "INTEGER DEFAULT 0"),
             ("is_deleted", "INTEGER DEFAULT 0"),
@@ -54,10 +56,11 @@ def save_baseline_messages(messages: List[dict]):
         for msg in messages:
             cursor.execute("""
                 INSERT OR IGNORE INTO messages 
-                (message_id, thread_id, thread_title, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_deleted, reported)
+                (message_id, my_account, thread_id, thread_title, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_deleted, reported)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)
             """, (
                 msg["message_id"],
+                msg.get("my_account", ""),
                 msg.get("thread_id", ""),
                 msg.get("thread_title", ""),
                 msg.get("sender_id", ""),
@@ -70,7 +73,7 @@ def save_baseline_messages(messages: List[dict]):
         conn.commit()
 
 def save_new_incoming_messages(messages: List[dict]):
-    """실행 이후 새로 도착한 DM 저장 (thread_title, is_group 포함)"""
+    """실행 이후 새로 도착한 DM 저장 (my_account, thread_title, is_group 포함)"""
     if not messages:
         return
     with get_connection() as conn:
@@ -78,10 +81,11 @@ def save_new_incoming_messages(messages: List[dict]):
         for msg in messages:
             cursor.execute("""
                 INSERT OR REPLACE INTO messages 
-                (message_id, thread_id, thread_title, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_deleted, reported)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+                (message_id, my_account, thread_id, thread_title, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_deleted, reported)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
             """, (
                 msg["message_id"],
+                msg.get("my_account", ""),
                 msg.get("thread_id", ""),
                 msg.get("thread_title", ""),
                 msg.get("sender_id", ""),

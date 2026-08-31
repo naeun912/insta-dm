@@ -30,7 +30,7 @@ def send_telegram_message(text: str) -> bool:
         return False
 
 def alert_realtime_deleted_dm_batch(deleted_items: List[dict]) -> bool:
-    """단일/다중 삭제 및 1대1/단체방(방 제목 표기) 메시지 텔레그램 실시간 알림"""
+    """단일/다중 삭제 및 다중 계정 텔레그램 실시간 알림"""
     if not deleted_items:
         return True
         
@@ -41,12 +41,16 @@ def alert_realtime_deleted_dm_batch(deleted_items: List[dict]) -> bool:
         username_display = f"@{username}" if username != "알 수 없음" else "알 수 없음"
         name_display = fullname if fullname else username_display
         
+        my_account = item.get("my_account", "")
+        acc_info = f"📌 <b>수신 계정:</b> @{my_account}\n" if my_account else ""
+        
         is_group = item.get("is_group", 0) == 1
         thread_title = item.get("thread_title", "")
         room_info = f"👥 <b>단체방:</b> {thread_title}\n" if (is_group and thread_title) else ("👥 <b>단체방 메시지</b>\n" if is_group else "")
         
         message_html = (
             "🚨 <b>[인스타그램 삭제된 DM 감지!]</b>\n\n"
+            f"{acc_info}"
             f"{room_info}"
             f"👤 <b>보낸 사람:</b> {name_display} ({username_display})\n"
             f"💬 <b>삭제된 내용:</b> {item.get('text')}\n"
@@ -61,12 +65,16 @@ def alert_realtime_deleted_dm_batch(deleted_items: List[dict]) -> bool:
         username_display = f"@{username}" if username != "알 수 없음" else "알 수 없음"
         name_display = fullname if fullname else username_display
         
+        my_account = first_item.get("my_account", "")
+        acc_info = f"📌 <b>수신 계정:</b> @{my_account}\n" if my_account else ""
+        
         is_group = first_item.get("is_group", 0) == 1
         thread_title = first_item.get("thread_title", "")
         room_info = f"👥 <b>단체방:</b> {thread_title}\n" if (is_group and thread_title) else ("👥 <b>단체방 메시지</b>\n" if is_group else "")
         
         header = (
             f"🚨 <b>[인스타그램 삭제된 DM 감지! (총 {len(deleted_items)}개 동시에 전송 취소됨)]</b>\n\n"
+            f"{acc_info}"
             f"{room_info}"
             f"👤 <b>보낸 사람:</b> {name_display} ({username_display})\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
@@ -127,9 +135,10 @@ def process_telegram_bot_commands(last_offset: int) -> int:
                     username = item.get("sender_username", "알 수 없음")
                     fullname = item.get("sender_fullname", username)
                     display_user = f"{fullname} (@{username})" if username != "알 수 없음" else fullname
+                    my_acc = f" [@{item.get('my_account')}]" if item.get("my_account") else ""
                     room_str = f" [👥 {item.get('thread_title')}]" if item.get("is_group") == 1 and item.get("thread_title") else ""
                     items_text.append(
-                        f"<b>{idx}. 보낸 사람:</b> {display_user}{room_str}\n"
+                        f"<b>{idx}. 수신:</b>{my_acc} <b>보낸 사람:</b> {display_user}{room_str}\n"
                         f"💬 <b>삭제된 내용:</b> {item.get('text')}\n"
                         f"🕒 <b>발송 시각:</b> {item.get('timestamp')} (KST)\n"
                     )
@@ -149,9 +158,10 @@ def process_telegram_bot_commands(last_offset: int) -> int:
             else:
                 items_text = []
                 for idx, item in enumerate(user_deleted, 1):
+                    my_acc = f" [@{item.get('my_account')}]" if item.get("my_account") else ""
                     room_str = f" [👥 {item.get('thread_title')}]" if item.get("is_group") == 1 and item.get("thread_title") else ""
                     items_text.append(
-                        f"<b>{idx}. 내용:</b> {item.get('text')}{room_str}\n"
+                        f"<b>{idx}. 내용:</b> {item.get('text')}{my_acc}{room_str}\n"
                         f"🕒 <b>발송 시각:</b> {item.get('timestamp')} (KST)\n"
                     )
                 header = f"👤 <b>[@{username} 님의 삭제된 DM 히스토리 (총 {len(user_deleted)}건)]</b>\n━━━━━━━━━━━━━━━━━━━\n"

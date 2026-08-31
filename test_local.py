@@ -62,8 +62,8 @@ except Exception as e:
 
 try:
     import main
-    assert hasattr(main, 'login_instagram')
-    assert hasattr(main, 'extract_threads')
+    assert hasattr(main, 'login_instagram') or hasattr(main, 'get_session_clients')
+    assert hasattr(main, 'extract_threads_for_client')
     assert hasattr(main, 'monitor_loop')
     print("✅ main.py 핵심 구조 및 함수 검증 완료")
 except Exception as e:
