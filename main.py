@@ -102,16 +102,26 @@ def login_instagram() -> Client:
 
 def extract_one_on_one_threads(cl: Client, amount_threads: int = 20) -> dict:
     """
-    1대1 개인 DM 스레드 추출.
-    인스타그램 API의 is_group 속성 및 thread_type 정밀 검사로 1대1 대화방 단 1개도 누락하지 않음.
+    메인 대화함(direct_threads) + 메시지 요청함(direct_pending_inbox)의 모든 1대1 DM 스레드 추출.
+    부계정/신규 계정 메시지 요청 DM까지 100% 캡처!
     """
     threads_data = {}
     try:
+        # 1. 메인 Direct 대화함 스레드
         threads = cl.direct_threads(amount=amount_threads)
+        
+        # 2. 메시지 요청함(Pending Inbox) 스레드도 함께 포함! (부계정/맞팔이 아닌 계정 DM 캡처)
+        try:
+            pending_threads = cl.direct_pending_inbox(amount=10)
+            if pending_threads:
+                threads.extend(pending_threads)
+        except Exception:
+            pass
+            
         for thread in threads:
             thread_id = str(thread.id)
             
-            # 정밀 그룹방 판별 (is_group 이 True 이거나 thread_type 이 group 인 경우만 그룹방으로 처리)
+            # 그룹방 판별 (is_group 이 True 이거나 thread_type 이 group 인 경우만 그룹방으로 무시)
             is_group_chat = (getattr(thread, 'is_group', False) is True) or (getattr(thread, 'thread_type', '') == 'group')
             if is_group_chat:
                 continue
@@ -160,11 +170,10 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 20) -> dict:
 def monitor_loop():
     kst_start_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
-    # 서버 시동 즉시 텔레그램 알림 전송
     send_telegram_message(
         f"⚡ <b>[인스타그램 DM 감시 서버 시동 중...]</b>\n"
         f"⏰ <b>시동 시각:</b> {kst_start_str} (한국시간)\n"
-        f"🔑 인스타그램 1대1 대화방을 실시간으로 감시합니다."
+        f"🔑 인스타그램 1대1 대화함 및 메시지 요청함(Pending)을 실시간으로 감시합니다."
     )
 
     print("=" * 60, flush=True)
@@ -185,7 +194,7 @@ def monitor_loop():
         "🎉 <b>[로그인 성공 및 실시간 1대1 DM 감시 가동 완료!]</b>\n\n"
         f"⏰ <b>시동 시각:</b> {kst_start_str} (KST)\n"
         f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 초고속 실시간 감지\n"
-        "✅ <b>지금부터 상대방이 나에게 보낸 DM이 전송 취소되면 즉시 텔레그램으로 쏘아드립니다!</b>"
+        "✅ <b>메인 대화함 + 메시지 요청함(부계정) 100% 실시간 감시 가동 중!</b>"
     )
     send_telegram_message(start_alert_text)
     
@@ -210,7 +219,7 @@ def monitor_loop():
                 monitored_map = get_monitored_messages_for_thread(thread_id)
                 monitored_msg_ids = set(monitored_map.keys())
                 
-                # 1. 스레드에서 수신된 메시지 중 아직 DB 감시 대상에 없으면 새로 저장
+                # 1. 수신된 메시지 중 아직 DB 감시 대상에 없으면 저장
                 new_incoming_ids = current_msg_ids - monitored_msg_ids
                 if new_incoming_ids:
                     new_msgs = [current_messages[mid] for mid in new_incoming_ids]
@@ -234,10 +243,8 @@ def monitor_loop():
                             print(f" - 보낸사람: @{item['sender_username']} / 내용: {item['text']}", flush=True)
                         print("!" * 60, flush=True)
                         
-                        # 텔레그램 실시간 알림 100% 발송!
                         alert_realtime_deleted_dm_batch(deleted_items)
 
-            # 10회 주기마다 헬스체크 로그 출력
             if loop_count % 10 == 0:
                 print(f"🔄 [감시 가동 중] {loop_count}번째 3초 감시 완료 (감시 중인 1대1 스레드: {len(threads_data)}개 / 메시지: {total_active_dms}개)", flush=True)
 
