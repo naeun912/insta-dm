@@ -31,10 +31,11 @@ def start_health_check_server():
 # instagrapi Import
 try:
     from instagrapi import Client
-    from instagrapi.exceptions import TwoFactorRequired, TwoFactorCodeRequired
-except ImportError:
-    print("❌ instagrapi 라이브러리가 설치되지 않았습니다. 'pip3 install -r requirements.txt'를 실행해주세요.")
+    from instagrapi.exceptions import TwoFactorRequired, LoginRequired
+except ImportError as e:
+    print(f"❌ instagrapi 라이브러리가 설치되지 않았습니다 ({e}). 'python3 -m pip install -r requirements.txt --user'를 실행해주세요.")
     sys.exit(1)
+
 
 def login_instagram() -> Client:
     """인스타그램 로그인 및 세션 (2FA 대응) 관리"""
@@ -72,9 +73,9 @@ def login_instagram() -> Client:
     print(f"🔑 인스타그램 계정({INSTAGRAM_USERNAME}) 신규 로그인 시도 중...")
     try:
         cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
-    except (TwoFactorRequired, TwoFactorCodeRequired, Exception) as e:
+    except (TwoFactorRequired, Exception) as e:
         err_msg = str(e).lower()
-        if "two-factor" in err_msg or "verification_code" in err_msg or "2fa" in err_msg or isinstance(e, (TwoFactorRequired, TwoFactorCodeRequired)):
+        if "two-factor" in err_msg or "verification_code" in err_msg or "2fa" in err_msg or isinstance(e, TwoFactorRequired):
             print("\n📱 인스타그램 2단계 인증(2FA)이 설정되어 있습니다!")
             try:
                 verification_code = input("👉 폰으로 전송된 6자리 2FA 보안 코드를 입력하세요: ").strip()
