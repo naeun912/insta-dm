@@ -102,9 +102,6 @@ def login_instagram() -> Client:
         sys.exit(1)
 
 def extract_threads(cl: Client, amount_threads: int = 15) -> dict:
-    """
-    초기 성공했던 원본의 가장 심플하고 확실한 direct_threads 스레드 메시지 추출.
-    """
     threads_data = {}
     try:
         threads = cl.direct_threads(amount=amount_threads)
@@ -154,7 +151,7 @@ def monitor_loop():
 
     print("=" * 60, flush=True)
     print("🚀 인스타그램 DM 실시간 삭제 감시 시스템 구동 시작!", flush=True)
-    print(f"📌 시동 시각: {kst_start_str} (KST) / 가장 안정적인 순정 원본 알고리즘 복원", flush=True)
+    print(f"📌 시동 시각: {kst_start_str} (KST)", flush=True)
     print("=" * 60, flush=True)
     
     t_web = threading.Thread(target=start_health_check_server, daemon=True)
@@ -182,9 +179,8 @@ def monitor_loop():
     start_alert_text = (
         "🎉 <b>[인스타그램 DM 삭제 감시 시스템 구동 시작!]</b>\n\n"
         f"⏰ <b>시동 시각:</b> {kst_start_str} (한국시간)\n"
-        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 체크\n"
-        "✅ <b>초기 검증 성공했던 원본 감지 모드 가동 완료:</b>\n"
-        "지금부터 상대방이 나에게 보낸 신규 DM이 전송 취소(삭제)되면 즉시 텔레그램으로 알려드립니다!"
+        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 스캔\n"
+        "✅ <b>지금부터 새로 도착하는 DM이 전송 취소(삭제)되면 즉시 텔레그램으로 알려드립니다!</b>"
     )
     send_telegram_message(start_alert_text)
     
@@ -213,7 +209,7 @@ def monitor_loop():
                     new_msgs = [current_messages[mid] for mid in new_incoming_ids]
                     save_new_incoming_messages(new_msgs)
                     for nm in new_msgs:
-                        print(f"📩 [새 DM 수신] @{nm['sender_username']}: {nm['text']} (시간: {nm['timestamp']})", flush=True)
+                        print(f"📩 [새 DM 수신 등록!] @{nm['sender_username']}: {nm['text']} (시간: {nm['timestamp']})", flush=True)
                 
                 # 감시 대상 메시지가 대화방에서 사라짐 ➡️ 100% 진짜 전송 취소(삭제)!!
                 deleted_ids = monitored_msg_ids - current_msg_ids
@@ -234,7 +230,7 @@ def monitor_loop():
                         alert_realtime_deleted_dm_batch(deleted_items)
 
             if loop_count % 10 == 0:
-                print(f"🔄 [감시 가동 중] {loop_count}번째 3초 감시 완료 (실시간 DM 삭제 감시 작동 중)", flush=True)
+                print(f"🔄 [감시 가동 중] {loop_count}번째 3초 감시 완료 (실시간 감시 가동 중)", flush=True)
 
             time.sleep(CHECK_INTERVAL)
             
