@@ -98,7 +98,14 @@ def get_session_clients() -> list:
             print(f"🎉 [계정 {idx} 로그인 성공] @{acc_username} (PK: {cl.user_id})", flush=True)
             clients.append((acc_username, cl))
         except Exception as e:
-            print(f"❌ [계정 {idx} 로그인 실패]: {e}", flush=True)
+            err_msg = f"❌ [계정 {idx} 세션 만료 / 로그인 실패]: {e}"
+            print(err_msg, flush=True)
+            alert_text = (
+                "⚠️ <b>[인스타그램 쿠키 만료 긴급 알림!]</b>\n\n"
+                f"📌 {idx}번 계정의 <code>sessionid</code> 쿠키가 만료되었거나 올바르지 않습니다.\n"
+                "인스타그램에서 새 sessionid 쿠키를 갱신해주셔야 감시가 정상 구동됩니다!"
+            )
+            send_telegram_message(alert_text)
             
     return clients
 
@@ -165,7 +172,17 @@ def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 
             
             threads_data[thread_id] = thread_messages
     except Exception as e:
-        print(f"⚠️ [@{username}] 스레드 수신 중 오류 발생: {e}", flush=True)
+        err_str = str(e).lower()
+        if "login" in err_str or "session" in err_str or "401" in err_str or "unauthorized" in err_str:
+            print(f"⚠️ [@{username}] 인스타그램 세션 쿠키 만료 감지!: {e}", flush=True)
+            alert_text = (
+                "⚠️ <b>[인스타그램 쿠키 만료 긴급 알림!]</b>\n\n"
+                f"📌 계정 <b>@{username}</b> 의 sessionid 쿠키가 만료되었습니다.\n"
+                "인스타그램에서 새 sessionid 쿠키를 갱신해주시면 감시가 다시 시작됩니다!"
+            )
+            send_telegram_message(alert_text)
+        else:
+            print(f"⚠️ [@{username}] 스레드 수신 중 오류 발생: {e}", flush=True)
         
     return threads_data
 
@@ -213,7 +230,7 @@ def monitor_loop():
         f"⏰ <b>시동 시각:</b> {kst_start_str} (KST)\n"
         f"📱 <b>감시 계정 ({len(clients)}개):</b> {account_names_str}\n"
         f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 순환 감시\n"
-        "✅ <b>위 계정들로 도착한 DM이 삭제되는 순간 텔레그램으로 알려드립니다!</b>"
+        "✅ <b>쿠키 만료 텔레그램 메시지 알림 기능 탑재 완료!</b>"
     )
     send_telegram_message(start_alert_text)
     
