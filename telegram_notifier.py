@@ -28,15 +28,30 @@ def send_telegram_message(text: str) -> bool:
         print(f"❌ [텔레그램 알림 발송 실패]: {e}")
         return False
 
-def send_hourly_deleted_dms_report(deleted_msgs: List[dict], kst_now_str: str) -> bool:
-    """한 시간 동안 1대1 DM에서 삭제된 메시지들만 모아서 요약 리스트로 발송"""
+def alert_realtime_deleted_dm(sender_username: str, sender_fullname: str, text: str, timestamp_kst: str) -> bool:
+    """새로 온 1대1 DM이 삭제된 순간 즉시 실시간 텔레그램 발송"""
+    username_display = f"@{sender_username}" if sender_username and sender_username != "알 수 없음" else "알 수 없음"
+    name_display = sender_fullname if sender_fullname else username_display
+    
+    message_html = (
+        "🚨 <b>[인스타그램 삭제된 DM 감지!]</b>\n\n"
+        f"👤 <b>보낸 사람:</b> {name_display} ({username_display})\n"
+        f"💬 <b>삭제된 내용:</b> {text}\n"
+        f"🕒 <b>원래 발송시간:</b> {timestamp_kst} (한국시간)\n\n"
+        "⚠️ <i>상대방이 인스타에서 위 메시지를 전송 취소(삭제)했습니다.</i>"
+    )
+    
+    return send_telegram_message(message_html)
+
+def send_summary_deleted_dms_report(deleted_msgs: List[dict], kst_now_str: str, interval_minutes: int = 10) -> bool:
+    """10분 간격 요약 리스트 발송"""
     if not deleted_msgs:
         return True
         
     count = len(deleted_msgs)
     header = (
-        f"📊 <b>[지난 1시간 동안 삭제된 개인 DM 리스트]</b>\n"
-        f"⏰ <b>집계 기준:</b> {kst_now_str} (한국시간)\n"
+        f"📊 <b>[지난 {interval_minutes}분 동안 삭제된 개인 DM 리스트]</b>\n"
+        f"⏰ <b>집계 시각:</b> {kst_now_str} (한국시간)\n"
         f"총 <b>{count}개</b>의 삭제된 메시지가 감지되었습니다.\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
     )
@@ -52,11 +67,11 @@ def send_hourly_deleted_dms_report(deleted_msgs: List[dict], kst_now_str: str) -
         item_str = (
             f"<b>{idx}. 보낸 사람:</b> {display_user}\n"
             f"💬 <b>삭제된 내용:</b> {text}\n"
-            f"🕒 <b>원래 발송시간:</b> {ts} (한국시간)\n"
+            f"🕒 <b>발송시간:</b> {ts} (한국시간)\n"
         )
         body_items.append(item_str)
         
-    footer = "━━━━━━━━━━━━━━━━━━━\n💡 <i>단체방은 제외되며, 개인 DM에서 실제 전송 취소된 내역만 집계됩니다.</i>"
+    footer = "━━━━━━━━━━━━━━━━━━━\n💡 <i>개인 DM에서 실제 전송 취소된 내역만 집계됩니다.</i>"
     
     full_text = header + "\n".join(body_items) + "\n" + footer
     return send_telegram_message(full_text)

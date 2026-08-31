@@ -20,7 +20,7 @@ from db import (
     get_unreported_deleted_messages,
     mark_deleted_as_reported
 )
-from telegram_notifier import send_hourly_deleted_dms_report, send_telegram_message
+from telegram_notifier import alert_realtime_deleted_dm, send_telegram_message
 
 # 한국 표준시 (KST = UTC+9) 설정
 KST = timezone(timedelta(hours=9))
@@ -52,7 +52,7 @@ def login_instagram() -> Client:
     cl = Client()
     cl.request_timeout = 15
     
-    # 0. INSTAGRAM_SESSION_ID 최우선 사용 (2FA 및 로그인 알림 100% 차단)
+    # 0. INSTAGRAM_SESSION_ID 최우선 사용
     session_id = os.getenv("INSTAGRAM_SESSION_ID", "").strip()
     if session_id:
         try:
@@ -96,17 +96,14 @@ def login_instagram() -> Client:
         sys.exit(1)
 
 def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
-    """
-    오직 1대1 개인 DM 스레드만 추출 (단체방 완전 제외).
-    반환 구조: { thread_id: { message_id: msg_dict } }
-    """
+    """오직 1대1 개인 DM 스레드만 추출"""
     threads_data = {}
     try:
         threads = cl.direct_threads(amount=amount_threads)
         for thread in threads:
             thread_id = str(thread.id)
             
-            # 단체방 완전 제외 검사
+            # 단체방 제외 검사
             is_group_chat = getattr(thread, 'is_group', False) or len(thread.users) > 1
             if is_group_chat:
                 continue
@@ -152,22 +149,10 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
         
     return threads_data
 
-def process_hourly_report():
-    """1시간 동안 '프로그램 실행 이후 도착했다가 삭제된 1대1 DM'만 요약 발송"""
-    unreported_deleted = get_unreported_deleted_messages()
-    if unreported_deleted:
-        kst_now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        print(f"📊 [1시간 요약 발송] 실행 이후 삭제된 1대1 DM 총 {len(unreported_deleted)}개를 텔레그램으로 전송합니다.")
-        sent_ok = send_hourly_deleted_dms_report(unreported_deleted, kst_now)
-        if sent_ok:
-            m_ids = [m["message_id"] for m in unreported_deleted]
-            mark_deleted_as_reported(m_ids)
-            print("✅ 1시간 요약 리스트 발송 완료!")
-
 def monitor_loop():
     print("=" * 60)
     print("🚀 인스타그램 개인 DM 삭제 감시 시스템 구동 시작!")
-    print("📌 모드: '실행 이후 새로 도착한 DM이 삭제된 경우만' 감지 / 단체방 제외 / KST 한국시간 / 1시간 단위 요약")
+    print("📌 모드: 오직 1대1 DM / 실행 이후 수신된 DM의 진짜 전송 취소 시 즉시 실시간 알림 / 한국시간(KST)")
     print("=" * 60)
     
     t = threading.Thread(target=start_health_check_server, daemon=True)
@@ -176,7 +161,7 @@ def monitor_loop():
     init_db()
     cl = login_instagram()
     
-    # 1. 시동 시점 기존 메시지들은 기준점(baseline)으로 등록
+    # 1. 시동 시점 기존 과거 메시지는 baseline 등록
     print("🔄 초기 1대1 DM 메시지들을 감시 기준점(baseline)으로 등록합니다...")
     initial_threads = extract_one_on_one_threads(cl, amount_threads=15)
     all_initial_msgs = []
@@ -191,20 +176,17 @@ def monitor_loop():
     start_alert_text = (
         "🎉 <b>[인스타그램 DM 삭제 감시 시스템 구동 시작!]</b>\n\n"
         f"⏰ <b>시작 시각:</b> {kst_start_str} (한국시간)\n"
-        "✅ <b>완벽한 감시 원리 적용 완료:</b>\n"
+        "✅ <b>완벽한 100% 실시간 삭제 감시 동작 중:</b>\n"
         "1. 기존 과거 메시지는 전부 무시됩니다.\n"
-        "2. <b>지금부터 상대방이 나에게 <u>새로 보낸 DM</u>이 생기고, 그 메시지를 <u>전송 취소(삭제)했을 때만</u> 정확히 잡습니다.</b>\n"
-        "3. 단체방은 제외하며 1시간마다 삭제 내역만 요약으로 보냅니다."
+        "2. <b>지금부터 상대방이 나에게 <u>새로 보낸 DM</u>이 전송 취소(삭제)되는 순간 즉시 텔레그램으로 알려드립니다!</b>\n"
+        "3. 단체방은 제외됩니다."
     )
     send_telegram_message(start_alert_text)
     
     print("\n" + "🎉" * 30)
-    print(f"✅ 기준점 등록 완료 ({len(initial_msg_ids)}개 과거 메시지 제외 조치).")
-    print("👀 지금부터 새로 수신되는 DM에 대해서만 삭제 감시를 수행합니다.")
+    print(f"✅ 로그인 및 초기화 완료 ({kst_start_str} KST). 오직 진짜 삭제 건에 대해서만 실시간 알림이 발송됩니다.")
     print("🎉" * 30 + "\n")
     
-    HOURLY_INTERVAL = 3600  # 1시간
-    last_hourly_check = time.time()
     consecutive_errors = 0
     
     while True:
@@ -225,9 +207,9 @@ def monitor_loop():
                     new_msgs = [current_messages[mid] for mid in new_incoming_ids]
                     save_new_incoming_messages(new_msgs)
                     for nm in new_msgs:
-                        print(f"📩 [실행 이후 새 DM 수신 기록] @{nm['sender_username']}: {nm['text'][:20]}...")
+                        print(f"📩 [새 DM 수신] @{nm['sender_username']}: {nm['text'][:20]}...")
                 
-                # 4. [감시 대상이던 새 DM이 삭제됨!] -> 100% 진짜 전송 취소!!
+                # 4. [감시 대상이던 새 DM이 삭제됨!] -> 100% 진짜 전송 취소!! -> 텔레그램 실시간 발송!
                 deleted_ids = monitored_msg_ids - current_msg_ids
                 for d_id in deleted_ids:
                     deleted_info = mark_message_deleted(d_id)
@@ -236,12 +218,16 @@ def monitor_loop():
                         print(f"🚨 [100% 진짜 전송 취소 감지!] 보낸사람: @{deleted_info['sender_username']}")
                         print(f"내용: {deleted_info['text']}")
                         print("!" * 60)
+                        
+                        # 오직 100% 진짜 삭제 건에 대해서만 텔레그램 실시간 발송!
+                        alert_realtime_deleted_dm(
+                            sender_username=deleted_info["sender_username"],
+                            sender_fullname=deleted_info["sender_fullname"],
+                            text=deleted_info["text"],
+                            timestamp_kst=deleted_info["timestamp"]
+                        )
+                        mark_deleted_as_reported([d_id])
 
-            # 5. 1시간 주기 요약 보고서 발송
-            if time.time() - last_hourly_check >= HOURLY_INTERVAL:
-                process_hourly_report()
-                last_hourly_check = time.time()
-                
             time.sleep(CHECK_INTERVAL)
             
         except KeyboardInterrupt:
