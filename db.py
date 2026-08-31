@@ -8,24 +8,38 @@ def get_connection():
     return conn
 
 def init_db():
-    """데이터베이스 테이블 초기화 및 더미 테스트 데이터 자동 청소"""
+    """데이터베이스 테이블 초기화 및 스키마 자동 마이그레이션"""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 message_id TEXT PRIMARY KEY,
                 thread_id TEXT,
+                thread_title TEXT,
                 sender_id TEXT,
                 sender_username TEXT,
                 sender_fullname TEXT,
                 text TEXT,
                 timestamp TEXT,
+                is_group INTEGER DEFAULT 0,
                 is_deleted INTEGER DEFAULT 0,
                 reported INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         conn.commit()
+
+        for col_name, col_type in [
+            ("thread_title", "TEXT DEFAULT ''"),
+            ("is_group", "INTEGER DEFAULT 0"),
+            ("is_deleted", "INTEGER DEFAULT 0"),
+            ("reported", "INTEGER DEFAULT 0")
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
+                conn.commit()
+            except Exception:
+                pass
 
         # 더미 테스트 데이터 자동 청소
         cursor.execute("DELETE FROM messages WHERE message_id LIKE 'test%' OR message_id LIKE 'base%' OR sender_username IN ('olduser', 'friend_user', 'testuser')")
@@ -40,21 +54,23 @@ def save_baseline_messages(messages: List[dict]):
         for msg in messages:
             cursor.execute("""
                 INSERT OR IGNORE INTO messages 
-                (message_id, thread_id, sender_id, sender_username, sender_fullname, text, timestamp, is_deleted, reported)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1)
+                (message_id, thread_id, thread_title, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_deleted, reported)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1)
             """, (
                 msg["message_id"],
                 msg.get("thread_id", ""),
+                msg.get("thread_title", ""),
                 msg.get("sender_id", ""),
                 msg.get("sender_username", "알 수 없음"),
                 msg.get("sender_fullname", "알 수 없음"),
                 msg.get("text", "(내용 없음 또는 미디어)"),
-                msg.get("timestamp", "")
+                msg.get("timestamp", ""),
+                msg.get("is_group", 0)
             ))
         conn.commit()
 
 def save_new_incoming_messages(messages: List[dict]):
-    """실행 이후 새로 도착한 DM 저장 (reported=0)"""
+    """실행 이후 새로 도착한 DM 저장 (thread_title, is_group 포함)"""
     if not messages:
         return
     with get_connection() as conn:
@@ -62,16 +78,18 @@ def save_new_incoming_messages(messages: List[dict]):
         for msg in messages:
             cursor.execute("""
                 INSERT OR REPLACE INTO messages 
-                (message_id, thread_id, sender_id, sender_username, sender_fullname, text, timestamp, is_deleted, reported)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+                (message_id, thread_id, thread_title, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_deleted, reported)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
             """, (
                 msg["message_id"],
                 msg.get("thread_id", ""),
+                msg.get("thread_title", ""),
                 msg.get("sender_id", ""),
                 msg.get("sender_username", "알 수 없음"),
                 msg.get("sender_fullname", "알 수 없음"),
                 msg.get("text", "(내용 없음 또는 미디어)"),
-                msg.get("timestamp", "")
+                msg.get("timestamp", ""),
+                msg.get("is_group", 0)
             ))
         conn.commit()
 
