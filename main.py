@@ -36,9 +36,8 @@ except ImportError as e:
     print(f"❌ instagrapi 라이브러리가 설치되지 않았습니다 ({e}). 'python3 -m pip install -r requirements.txt --user'를 실행해주세요.")
     sys.exit(1)
 
-
 def login_instagram() -> Client:
-    """인스타그램 로그인 및 세션 (2FA 대응) 관리"""
+    """인스타그램 로그인 및 폰 [승인] 버튼 / 2FA 대응 관리"""
     cl = Client()
     cl.request_timeout = 10
     
@@ -46,7 +45,7 @@ def login_instagram() -> Client:
     session_env = os.getenv("INSTAGRAM_SESSION_SETTINGS", "").strip()
     if session_env:
         try:
-            print("🔄 환경 변수에 등록된 2FA 세션 설정으로 로그인합니다...")
+            print("🔄 환경 변수에 등록된 세션 설정으로 로그인합니다...")
             cl.set_settings(json.loads(session_env))
             cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
             print("✅ 2FA 세션 환경 변수로 로그인 성공!")
@@ -65,7 +64,7 @@ def login_instagram() -> Client:
         except Exception as e:
             print(f"⚠️ 로컬 세션 로그인 실패 ({e}). 신규 로그인을 진행합니다...")
 
-    # 3. 신규 로그인 시도 (2FA 처리 지원)
+    # 3. 신규 로그인 시도 (폰 [승인] 대기 및 2FA 지원)
     if not INSTAGRAM_USERNAME or not INSTAGRAM_PASSWORD:
         print("❌ INSTAGRAM_USERNAME과 INSTAGRAM_PASSWORD 설정이 누락되었습니다.")
         sys.exit(1)
@@ -73,19 +72,33 @@ def login_instagram() -> Client:
     print(f"🔑 인스타그램 계정({INSTAGRAM_USERNAME}) 신규 로그인 시도 중...")
     try:
         cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
-    except (TwoFactorRequired, Exception) as e:
-        err_msg = str(e).lower()
-        if "two-factor" in err_msg or "verification_code" in err_msg or "2fa" in err_msg or isinstance(e, TwoFactorRequired):
-            print("\n📱 인스타그램 2단계 인증(2FA)이 설정되어 있습니다!")
-            try:
-                verification_code = input("👉 폰으로 전송된 6자리 2FA 보안 코드를 입력하세요: ").strip()
-                cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, verification_code=verification_code)
-            except Exception as login_err:
-                print(f"❌ 2FA 코드 로그인 실패: {login_err}")
+    except Exception as e:
+        print("\n" + "=" * 60)
+        print("📱 폰 인스타그램 앱으로 [로그인 승인 요청]이 전송되었습니다!")
+        print("⏳ 15초 동안 대기합니다. 폰 인스타 앱에서 [승인] / [예, 제가 맞습니다]를 누르세요.")
+        print("=" * 60)
+        
+        for i in range(15, 0, -1):
+            print(f"\r⏳ 남은 시간: {i}초... (폰에서 [승인] 버튼을 누르세요!)", end="", flush=True)
+            time.sleep(1)
+        print("\n\n🔄 승인 확인 중... 재로그인을 시도합니다.")
+        
+        try:
+            cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
+            print("🎉 폰 승인 확인 완료! 로그인 성공!")
+        except Exception as retry_err:
+            print(f"\n⚠️ 폰 승인 확인 실패 ({retry_err}).")
+            code_input = input("👉 혹시 6자리 보안 코드가 문자로 왔나요? (있으면 6자리 입력, 없으면 Enter): ").strip()
+            if code_input:
+                try:
+                    cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, verification_code=code_input)
+                    print("🎉 6자리 코드로 로그인 성공!")
+                except Exception as code_err:
+                    print(f"❌ 로그인 실패: {code_err}")
+                    sys.exit(1)
+            else:
+                print(f"❌ 로그인 실패: {retry_err}")
                 sys.exit(1)
-        else:
-            print(f"❌ 로그인 실패: {e}")
-            sys.exit(1)
 
     # 로그인 성공 후 세션 파일 저장
     cl.dump_settings(SESSION_PATH)
@@ -94,7 +107,7 @@ def login_instagram() -> Client:
     # 2FA 계정을 위한 세션 문자열 출력 (Render 환경변수 등록용)
     session_json_str = json.dumps(cl.get_settings())
     print("\n" + "="*60)
-    print("💡 Render 서버 2FA 세션 설정 문자열 (Render 환경 변수에 등록 시 2FA 재인증 불필요):")
+    print("💡 Render 서버에 등록할 세션 텍스트 (이걸 Render 환경 변수에 넣으면 24시간 365일 무한 구동됩니다):")
     print(session_json_str)
     print("="*60 + "\n")
     
