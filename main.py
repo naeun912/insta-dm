@@ -14,14 +14,18 @@ from config import (
 )
 from db import (
     init_db,
-    get_monitored_messages_for_thread,
-    save_new_realtime_messages,
+    save_baseline_messages,
+    save_realtime_new_messages,
+    get_realtime_monitored_messages,
     mark_message_deleted
 )
 from telegram_notifier import alert_realtime_deleted_dm_batch, send_telegram_message, process_telegram_bot_commands
 
 # 한국 표준시 (KST = UTC+9) 설정
 KST = timezone(timedelta(hours=9))
+
+# 프로그램 시동 시작 시각
+SCRIPT_START_TIME = datetime.now(KST)
 
 # Render 무료 웹 서비스 포트 바인딩용 헬스체크 서버
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -102,15 +106,12 @@ def login_instagram() -> Client:
 
 def extract_all_threads(cl: Client, amount_threads: int = 25) -> dict:
     """
-    1대1 대화방 + 단체방 + 메시지 요청함(Pending) 등 모든 인스타그램 DM 스레드 100% 수집!
-    단체방인 경우 단체방 이름(thread_title)도 함께 추출.
+    1대1 대화방 + 단체방 + 메시지 요청함(Pending) 모든 DM 스레드 수집.
+    각 메시지의 발송 타임스탬프(dt_kst)를 정밀 분석.
     """
     threads_data = {}
     try:
-        # 1. 메인 Direct 대화함 스레드
         threads = cl.direct_threads(amount=amount_threads)
-        
-        # 2. 메시지 요청함(Pending Inbox) 스레드 포함
         try:
             pending_threads = cl.direct_pending_inbox(amount=10)
             if pending_threads:
@@ -121,7 +122,6 @@ def extract_all_threads(cl: Client, amount_threads: int = 25) -> dict:
         for thread in threads:
             thread_id = str(thread.id)
             
-            # 단체방 여부 및 단체방 이름 추출
             is_group_chat = (getattr(thread, 'is_group', False) is True) or (getattr(thread, 'thread_type', '') == 'group') or len(thread.users) > 1
             thread_title = getattr(thread, 'thread_title', None) or getattr(thread, 'title', None)
             if not thread_title:
@@ -173,17 +173,20 @@ def extract_all_threads(cl: Client, amount_threads: int = 25) -> dict:
     return threads_data
 
 def monitor_loop():
-    kst_start_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    global SCRIPT_START_TIME
+    SCRIPT_START_TIME = datetime.now(KST)
+    kst_start_str = SCRIPT_START_TIME.strftime("%Y-%m-%d %H:%M:%S")
 
     send_telegram_message(
         f"⚡ <b>[인스타그램 DM 감시 서버 시동 중...]</b>\n"
         f"⏰ <b>시동 시각:</b> {kst_start_str} (한국시간)\n"
-        f"🔑 1대1 대화방 + 단체방(방제목) + 메시지 요청함을 모두 감시합니다."
+        f"🔑 인스타그램 계정에 접속하여 과거 메시지 동기화 및 실시간 감시를 시작합니다."
     )
 
     print("=" * 60, flush=True)
     print("🚀 인스타그램 DM 실시간 감시 시스템 구동 시작!", flush=True)
-    print(f"📌 모드: 1대1 + 단체방(방제목 표기) + 메시지 요청함 100% 완전 통합 감시", flush=True)
+    print(f"📌 시동 시각: {kst_start_str} (KST)", flush=True)
+    print("📌 100% 엄격 모드: 시동 시점 이전 과거 메시지는 100% 무시 / 실행 이후 신규 DM만 감시", flush=True)
     print("=" * 60, flush=True)
     
     t_web = threading.Thread(target=start_health_check_server, daemon=True)
@@ -195,16 +198,31 @@ def monitor_loop():
     init_db()
     cl = login_instagram()
     
+    # ⭐ [1단계: 시동 시점 수신함에 존재하던 기존 과거 메시지 동기화 (Baseline)]
+    print(f"🔄 시동 시각({kst_start_str}) 기준 수신함에 있던 기존 메시지들을 감시 기준점(Baseline)으로 동기화합니다...", flush=True)
+    initial_threads = extract_all_threads(cl, amount_threads=25)
+    initial_msg_ids = set()
+    all_initial_msgs = []
+    
+    for t_id, msgs in initial_threads.items():
+        all_initial_msgs.extend(msgs.values())
+        initial_msg_ids.update(msgs.keys())
+        
+    save_baseline_messages(all_initial_msgs)
+    print(f"✅ 기존 과거 메시지 총 {len(initial_msg_ids)}개 동기화 완료! (이 메시지들은 새 메시지/삭제 알림에서 100% 제외됩니다)", flush=True)
+
     start_alert_text = (
-        "🎉 <b>[로그인 성공 및 100% 전체 DM 감시 가동 완료!]</b>\n\n"
+        "🎉 <b>[로그인 성공 및 실시간 DM 감시 가동 완료!]</b>\n\n"
         f"⏰ <b>시동 시각:</b> {kst_start_str} (KST)\n"
-        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 초고속 실시간 감지\n"
-        "✅ <b>1대1 대화방 & 단체방(방제목 포함) 모든 삭제 DM 100% 감시 가동 중!</b>"
+        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 스캔\n"
+        "🎯 <b>[과거 메시지 100% 차단 엄격 모드 작동 중]</b>\n"
+        f"• 시동 시각({kst_start_str}) 이전에 온 과거 메시지 {len(initial_msg_ids)}개는 무시 처리되었습니다.\n"
+        "• <b>지금부터 상대방이 나에게 보낸 '신규 DM'이 전송 취소될 때만 즉시 텔레그램으로 알려드립니다!</b>"
     )
     send_telegram_message(start_alert_text)
     
     print("\n" + "🎉" * 30, flush=True)
-    print(f"✅ 로그인 완료 및 3초 간격 전체 DM(1대1+단체방) 감시 가동 중.", flush=True)
+    print(f"✅ 동기화 완료 및 3초 간격 실시간 DM 감시 가동 중.", flush=True)
     print("🎉" * 30 + "\n", flush=True)
     
     consecutive_errors = 0
@@ -216,24 +234,31 @@ def monitor_loop():
             threads_data = extract_all_threads(cl, amount_threads=25)
             consecutive_errors = 0
             
-            total_active_dms = 0
             for thread_id, current_messages in threads_data.items():
                 current_msg_ids = set(current_messages.keys())
-                total_active_dms += len(current_msg_ids)
                 
-                monitored_map = get_monitored_messages_for_thread(thread_id)
+                # DB에 등록된 '시동 이후 도착한 신규 감시 대상 메시지들'
+                monitored_map = get_realtime_monitored_messages(thread_id)
                 monitored_msg_ids = set(monitored_map.keys())
                 
-                # 1. 스레드에서 수신된 메시지 중 아직 DB 감시 대상에 없으면 저장
-                new_incoming_ids = current_msg_ids - monitored_msg_ids
-                if new_incoming_ids:
-                    new_msgs = [current_messages[mid] for mid in new_incoming_ids]
-                    save_new_realtime_messages(new_msgs)
-                    for nm in new_msgs:
-                        room_str = f" [👥 {nm['thread_title']}]" if nm['is_group'] == 1 and nm['thread_title'] else ""
-                        print(f"📩 [새 DM 수신] @{nm['sender_username']}{room_str}: {nm['text'][:20]}... (시간: {nm['timestamp']})", flush=True)
+                # ⭐ [2단계: 시동 시점 이후에 새로 수신된 DM만 감시 대상 등록]
+                new_incoming_ids = current_msg_ids - initial_msg_ids - monitored_msg_ids
                 
-                # 2. 감시 대상 목록에 존재했으나 현재 스레드에서 사라진 메시지 ➡️ 100% 삭제!!
+                if new_incoming_ids:
+                    realtime_new_msgs = []
+                    for mid in new_incoming_ids:
+                        msg_item = current_messages[mid]
+                        # 타임스탬프 추가 2차 검증: 메시지 발송 시간이 시동 시각 이후인 경우만!
+                        if msg_item["dt_kst"] >= (SCRIPT_START_TIME - timedelta(seconds=10)):
+                            realtime_new_msgs.append(msg_item)
+                            
+                    if realtime_new_msgs:
+                        save_realtime_new_messages(realtime_new_msgs)
+                        for nm in realtime_new_msgs:
+                            room_str = f" [👥 {nm['thread_title']}]" if nm['is_group'] == 1 and nm['thread_title'] else ""
+                            print(f"📩 [실행 후 새 DM 수신] @{nm['sender_username']}{room_str}: {nm['text']} (발송시간: {nm['timestamp']})", flush=True)
+                
+                # ⭐ [3단계: 시동 이후 수신된 신규 DM이 대화방에서 사라진 경우 ➡️ 100% 삭제 감지!]
                 deleted_ids = monitored_msg_ids - current_msg_ids
                 if deleted_ids:
                     deleted_items = []
@@ -246,13 +271,13 @@ def monitor_loop():
                         print("!" * 60, flush=True)
                         print(f"🚨 [100% 진짜 전송 취소 감지!] 총 {len(deleted_items)}개 삭제됨.", flush=True)
                         for item in deleted_items:
-                            print(f" - 보낸사람: @{item['sender_username']} / 방제목: {item.get('thread_title', '1대1방')} / 내용: {item['text']}", flush=True)
+                            print(f" - 보낸사람: @{item['sender_username']} / 내용: {item['text']}", flush=True)
                         print("!" * 60, flush=True)
                         
                         alert_realtime_deleted_dm_batch(deleted_items)
 
             if loop_count % 10 == 0:
-                print(f"🔄 [감시 가동 중] {loop_count}번째 3초 감시 완료 (감시 중인 전체 대화방: {len(threads_data)}개 / 메시지: {total_active_dms}개)", flush=True)
+                print(f"🔄 [감시 가동 중] {loop_count}번째 3초 감시 완료 (시동 이후 신규 DM 실시간 감시 중)", flush=True)
 
             time.sleep(CHECK_INTERVAL)
             

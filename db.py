@@ -22,6 +22,7 @@ def init_db():
                 text TEXT,
                 timestamp TEXT,
                 is_group INTEGER DEFAULT 0,
+                is_new_since_start INTEGER DEFAULT 0,
                 is_deleted INTEGER DEFAULT 0,
                 reported INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -32,6 +33,7 @@ def init_db():
         for col_name, col_type in [
             ("thread_title", "TEXT DEFAULT ''"),
             ("is_group", "INTEGER DEFAULT 0"),
+            ("is_new_since_start", "INTEGER DEFAULT 0"),
             ("is_deleted", "INTEGER DEFAULT 0"),
             ("reported", "INTEGER DEFAULT 0")
         ]:
@@ -41,28 +43,17 @@ def init_db():
             except Exception:
                 pass
 
-def get_monitored_messages_for_thread(thread_id: str) -> Dict[str, dict]:
-    """해당 스레드의 현재 감시 중인 활성 메시지 맵 반환 (is_deleted = 0)"""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM messages 
-            WHERE thread_id = ? AND is_deleted = 0
-        """, (thread_id,))
-        rows = cursor.fetchall()
-        return {row["message_id"]: dict(row) for row in rows}
-
-def save_new_realtime_messages(messages: List[dict]):
-    """1대1 및 단체방 신규 메시지 DB 저장"""
+def save_baseline_messages(messages: List[dict]):
+    """시동 시점 기존에 있던 메시지들은 과거 메시지(is_new_since_start=0)로 등록하여 새 메시지 및 삭제 알림에서 완전 제외"""
     if not messages:
         return
     with get_connection() as conn:
         cursor = conn.cursor()
         for msg in messages:
             cursor.execute("""
-                INSERT OR REPLACE INTO messages 
-                (message_id, thread_id, thread_title, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_deleted, reported)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+                INSERT OR IGNORE INTO messages 
+                (message_id, thread_id, thread_title, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_new_since_start, is_deleted, reported)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
             """, (
                 msg["message_id"],
                 msg.get("thread_id", ""),
@@ -76,11 +67,46 @@ def save_new_realtime_messages(messages: List[dict]):
             ))
         conn.commit()
 
-def mark_message_deleted(message_id: str) -> Optional[dict]:
-    """메시지가 대화방에서 사라진 경우 is_deleted=1 로 변경 및 정보 반환"""
+def save_realtime_new_messages(messages: List[dict]):
+    """시동 시각 이후(timestamp >= SCRIPT_START_TIME) 새로 도착한 DM만 감시 대상(is_new_since_start=1)으로 저장"""
+    if not messages:
+        return
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM messages WHERE message_id = ? AND is_deleted = 0", (message_id,))
+        for msg in messages:
+            cursor.execute("""
+                INSERT OR REPLACE INTO messages 
+                (message_id, thread_id, thread_title, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_new_since_start, is_deleted, reported)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0)
+            """, (
+                msg["message_id"],
+                msg.get("thread_id", ""),
+                msg.get("thread_title", ""),
+                msg.get("sender_id", ""),
+                msg.get("sender_username", "알 수 없음"),
+                msg.get("sender_fullname", "알 수 없음"),
+                msg.get("text", "(내용 없음 또는 미디어)"),
+                msg.get("timestamp", ""),
+                msg.get("is_group", 0)
+            ))
+        conn.commit()
+
+def get_realtime_monitored_messages(thread_id: str) -> Dict[str, dict]:
+    """시동 이후 수신된 감시 대상 신규 메시지 목록만 조회 (is_new_since_start = 1, is_deleted = 0)"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM messages 
+            WHERE thread_id = ? AND is_new_since_start = 1 AND is_deleted = 0
+        """, (thread_id,))
+        rows = cursor.fetchall()
+        return {row["message_id"]: dict(row) for row in rows}
+
+def mark_message_deleted(message_id: str) -> Optional[dict]:
+    """시동 이후 새로 도착했던 DM이 삭제된 경우만 is_deleted=1 로 변경 및 정보 반환"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM messages WHERE message_id = ? AND is_new_since_start = 1 AND is_deleted = 0", (message_id,))
         row = cursor.fetchone()
         if row:
             msg_dict = dict(row)
