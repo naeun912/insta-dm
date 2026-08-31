@@ -8,7 +8,7 @@ def get_connection():
     return conn
 
 def init_db():
-    """데이터베이스 테이블 초기화"""
+    """데이터베이스 테이블 초기화 및 더미 테스트 데이터 자동 청소"""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -25,6 +25,10 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        conn.commit()
+
+        # 더미 테스트 데이터 자동 청소
+        cursor.execute("DELETE FROM messages WHERE message_id LIKE 'test%' OR message_id LIKE 'base%' OR sender_username IN ('olduser', 'friend_user', 'testuser')")
         conn.commit()
 
 def save_baseline_messages(messages: List[dict]):
