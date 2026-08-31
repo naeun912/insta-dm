@@ -17,6 +17,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # App Settings
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "12"))  # 초 단위 감시 주기 (기본 12초)
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "3"))  # 초단위 감시 주기 (3초 초고속 감지)
+
 DB_PATH = BASE_DIR / "messages.db"
 SESSION_PATH = BASE_DIR / "session.json"
