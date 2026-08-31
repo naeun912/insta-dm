@@ -21,6 +21,7 @@ def init_db():
                 text TEXT,
                 timestamp TEXT,
                 is_group INTEGER DEFAULT 0,
+                is_new_since_start INTEGER DEFAULT 0,
                 is_deleted INTEGER DEFAULT 0,
                 reported INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -30,6 +31,7 @@ def init_db():
 
         for col_name, col_type in [
             ("is_group", "INTEGER DEFAULT 0"),
+            ("is_new_since_start", "INTEGER DEFAULT 0"),
             ("is_deleted", "INTEGER DEFAULT 0"),
             ("reported", "INTEGER DEFAULT 0")
         ]:
@@ -39,19 +41,19 @@ def init_db():
             except Exception:
                 pass
 
-def get_active_messages_for_thread(thread_id: str) -> Dict[str, dict]:
-    """해당 1대1 스레드의 DB 저장 메시지 맵 반환 (is_deleted = 0)"""
+def get_monitored_messages_for_thread(thread_id: str) -> Dict[str, dict]:
+    """구동 시각 이후 생성되어 현재 감시 중인 메시지 맵 반환 (is_new_since_start = 1, is_deleted = 0)"""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT * FROM messages 
-            WHERE thread_id = ? AND is_deleted = 0 AND is_group = 0
+            WHERE thread_id = ? AND is_new_since_start = 1 AND is_deleted = 0 AND is_group = 0
         """, (thread_id,))
         rows = cursor.fetchall()
         return {row["message_id"]: dict(row) for row in rows}
 
-def save_thread_messages(messages: List[dict]):
-    """1대1 DM 메시지들을 DB에 저장 또는 갱신"""
+def save_new_realtime_messages(messages: List[dict]):
+    """시동 시각 이후(timestamp >= SCRIPT_START_TIME) 새로 도착한 1대1 DM만 감시 대상으로 저장 (is_new_since_start=1)"""
     if not messages:
         return
     with get_connection() as conn:
@@ -61,8 +63,8 @@ def save_thread_messages(messages: List[dict]):
                 continue
             cursor.execute("""
                 INSERT OR REPLACE INTO messages 
-                (message_id, thread_id, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_deleted, reported)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+                (message_id, thread_id, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_new_since_start, is_deleted, reported)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0)
             """, (
                 msg["message_id"],
                 msg.get("thread_id", ""),
@@ -75,10 +77,10 @@ def save_thread_messages(messages: List[dict]):
         conn.commit()
 
 def mark_message_deleted(message_id: str) -> Optional[dict]:
-    """메시지가 1대1 대화방에서 사라진 경우 is_deleted=1 로 변경 및 정보 반환"""
+    """구동 시각 이후 도착했던 메시지가 삭제된 경우만 is_deleted=1 로 변경"""
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM messages WHERE message_id = ? AND is_group = 0 AND is_deleted = 0", (message_id,))
+        cursor.execute("SELECT * FROM messages WHERE message_id = ? AND is_new_since_start = 1 AND is_group = 0 AND is_deleted = 0", (message_id,))
         row = cursor.fetchone()
         if row:
             msg_dict = dict(row)

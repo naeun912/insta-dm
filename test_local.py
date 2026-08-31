@@ -38,10 +38,10 @@ try:
         "timestamp": "2026-08-31 14:30:00",
         "is_group": 0
     }
-    db.save_thread_messages([test_msg])
-    print("✅ save_thread_messages() 정상 작동 확인")
+    db.save_new_realtime_messages([test_msg])
+    print("✅ save_new_realtime_messages() 정상 작동 확인")
     
-    monitored = db.get_active_messages_for_thread("thread_100")
+    monitored = db.get_monitored_messages_for_thread("thread_100")
     assert "test_msg_100" in monitored, "오류: 메시지가 DB 감시 대상에 포함되지 않음"
     print("✅ 활성 메시지 스레드 조회 로직 정상 작동 확인")
     
