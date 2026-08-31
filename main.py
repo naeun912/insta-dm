@@ -33,15 +33,27 @@ try:
     from instagrapi import Client
     from instagrapi.exceptions import TwoFactorRequired, LoginRequired
 except ImportError as e:
-    print(f"❌ instagrapi 라이브러리가 설치되지 않았습니다 ({e}). 'python3 -m pip install -r requirements.txt --user'를 실행해주세요.")
+    print(f"❌ instagrapi 라이브러리가 설치되지 않았습니다 ({e}).")
     sys.exit(1)
 
 def login_instagram() -> Client:
-    """인스타그램 로그인 및 폰 [승인] 버튼 / 2FA 대응 관리"""
+    """인스타그램 로그인 (sessionid 최우선 및 2FA 지원)"""
     cl = Client()
     cl.request_timeout = 10
     
-    # 1. 환경변수 INSTAGRAM_SESSION_SETTINGS가 주어졌을 때 (Render용)
+    # 0. INSTAGRAM_SESSION_ID 가 주어졌을 때 (가장 확실하고 안전함! 2FA 무력화)
+    session_id = os.getenv("INSTAGRAM_SESSION_ID", "").strip()
+    if session_id:
+        try:
+            print("🔑 sessionid 쿠키 값으로 인스타그램에 로그인합니다...")
+            cl.login_by_sessionid(session_id)
+            print("🎉 sessionid 쿠키로 로그인 100% 성공! (2단계 인증 필요 없음)")
+            cl.dump_settings(SESSION_PATH)
+            return cl
+        except Exception as e:
+            print(f"⚠️ sessionid 로그인 실패 ({e}). 다른 방식으로 시도합니다.")
+
+    # 1. 환경변수 INSTAGRAM_SESSION_SETTINGS가 주어졌을 때
     session_env = os.getenv("INSTAGRAM_SESSION_SETTINGS", "").strip()
     if session_env:
         try:
@@ -64,7 +76,7 @@ def login_instagram() -> Client:
         except Exception as e:
             print(f"⚠️ 로컬 세션 로그인 실패 ({e}). 신규 로그인을 진행합니다...")
 
-    # 3. 신규 로그인 시도 (폰 [승인] 대기 및 2FA 지원)
+    # 3. 비밀번호 신규 로그인 시도
     if not INSTAGRAM_USERNAME or not INSTAGRAM_PASSWORD:
         print("❌ INSTAGRAM_USERNAME과 INSTAGRAM_PASSWORD 설정이 누락되었습니다.")
         sys.exit(1)
@@ -100,17 +112,8 @@ def login_instagram() -> Client:
                 print(f"❌ 로그인 실패: {retry_err}")
                 sys.exit(1)
 
-    # 로그인 성공 후 세션 파일 저장
     cl.dump_settings(SESSION_PATH)
     print("✅ 로그인 성공 및 세션 저장 완료!")
-    
-    # 2FA 계정을 위한 세션 문자열 출력 (Render 환경변수 등록용)
-    session_json_str = json.dumps(cl.get_settings())
-    print("\n" + "="*60)
-    print("💡 Render 서버에 등록할 세션 텍스트 (이걸 Render 환경 변수에 넣으면 24시간 365일 무한 구동됩니다):")
-    print(session_json_str)
-    print("="*60 + "\n")
-    
     return cl
 
 def extract_thread_messages(cl: Client, amount_threads: int = 15) -> dict:
