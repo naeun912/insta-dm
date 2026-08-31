@@ -1,6 +1,7 @@
 import time
 import sys
 import os
+import json
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
@@ -20,59 +21,86 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Instagram DM Monitor is Running!")
     def log_message(self, format, *args):
-        return # 로그 조용히 유지
+        return
 
 def start_health_check_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-
 # instagrapi Import
 try:
     from instagrapi import Client
-    from instagrapi.exceptions import LoginRequired
+    from instagrapi.exceptions import TwoFactorRequired, TwoFactorCodeRequired
 except ImportError:
-    print("❌ instagrapi 라이브러리가 설치되지 않았습니다. 'pip install -r requirements.txt'를 먼저 실행해주세요.")
+    print("❌ instagrapi 라이브러리가 설치되지 않았습니다. 'pip3 install -r requirements.txt'를 실행해주세요.")
     sys.exit(1)
 
 def login_instagram() -> Client:
-    """인스타그램 로그인 및 세션 관리"""
+    """인스타그램 로그인 및 세션 (2FA 대응) 관리"""
     cl = Client()
-    
-    # 보안 제재 방지를 위한 타임아웃/딜레이 설정
     cl.request_timeout = 10
     
-    # 세션 파일이 있는 경우 세션 로드 시도
-    if SESSION_PATH.exists():
+    # 1. 환경변수 INSTAGRAM_SESSION_SETTINGS가 주어졌을 때 (Render용)
+    session_env = os.getenv("INSTAGRAM_SESSION_SETTINGS", "").strip()
+    if session_env:
         try:
-            print(f"🔄 기존 세션 파일({SESSION_PATH.name})에서 로그인을 시도합니다...")
-            cl.load_settings(SESSION_PATH)
+            print("🔄 환경 변수에 등록된 2FA 세션 설정으로 로그인합니다...")
+            cl.set_settings(json.loads(session_env))
             cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
-            print("✅ 기존 세션으로 로그인 성공!")
+            print("✅ 2FA 세션 환경 변수로 로그인 성공!")
             return cl
         except Exception as e:
-            print(f"⚠️ 기존 세션 로그인 실패 ({e}). 새로 로그인을 진행합니다...")
+            print(f"⚠️ 환경 변수 세션 로그인 실패 ({e}). 기본 로그인으로 재시도합니다.")
 
-    # 세션이 없거나 실패한 경우 신규 로그인
+    # 2. 로컬 session.json 파일이 존재하는 경우
+    if SESSION_PATH.exists():
+        try:
+            print(f"🔄 로컬 세션 파일({SESSION_PATH.name})에서 로그인을 시도합니다...")
+            cl.load_settings(SESSION_PATH)
+            cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
+            print("✅ 로컬 세션 로그인 성공!")
+            return cl
+        except Exception as e:
+            print(f"⚠️ 로컬 세션 로그인 실패 ({e}). 신규 로그인을 진행합니다...")
+
+    # 3. 신규 로그인 시도 (2FA 처리 지원)
     if not INSTAGRAM_USERNAME or not INSTAGRAM_PASSWORD:
-        print("❌ .env 파일에 INSTAGRAM_USERNAME과 INSTAGRAM_PASSWORD를 작성해주세요.")
+        print("❌ INSTAGRAM_USERNAME과 INSTAGRAM_PASSWORD 설정이 누락되었습니다.")
         sys.exit(1)
         
     print(f"🔑 인스타그램 계정({INSTAGRAM_USERNAME}) 신규 로그인 시도 중...")
     try:
         cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
-        cl.dump_settings(SESSION_PATH)
-        print("✅ 로그인 성공 및 세션 저장 완료!")
-        return cl
-    except Exception as e:
-        print(f"❌ 로그인 실패: {e}")
-        sys.exit(1)
+    except (TwoFactorRequired, TwoFactorCodeRequired, Exception) as e:
+        err_msg = str(e).lower()
+        if "two-factor" in err_msg or "verification_code" in err_msg or "2fa" in err_msg or isinstance(e, (TwoFactorRequired, TwoFactorCodeRequired)):
+            print("\n📱 인스타그램 2단계 인증(2FA)이 설정되어 있습니다!")
+            try:
+                verification_code = input("👉 폰으로 전송된 6자리 2FA 보안 코드를 입력하세요: ").strip()
+                cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, verification_code=verification_code)
+            except Exception as login_err:
+                print(f"❌ 2FA 코드 로그인 실패: {login_err}")
+                sys.exit(1)
+        else:
+            print(f"❌ 로그인 실패: {e}")
+            sys.exit(1)
+
+    # 로그인 성공 후 세션 파일 저장
+    cl.dump_settings(SESSION_PATH)
+    print("✅ 로그인 성공 및 세션 저장 완료!")
+    
+    # 2FA 계정을 위한 세션 문자열 출력 (Render 환경변수 등록용)
+    session_json_str = json.dumps(cl.get_settings())
+    print("\n" + "="*60)
+    print("💡 Render 서버 2FA 세션 설정 문자열 (Render 환경 변수에 등록 시 2FA 재인증 불필요):")
+    print(session_json_str)
+    print("="*60 + "\n")
+    
+    return cl
 
 def extract_thread_messages(cl: Client, amount_threads: int = 15) -> dict:
-    """최근 스레드의 메시지들을 읽어와 dict 구조로 변환"""
     current_messages = {}
-    
     try:
         threads = cl.direct_threads(amount=amount_threads)
         for thread in threads:
@@ -83,17 +111,13 @@ def extract_thread_messages(cl: Client, amount_threads: int = 15) -> dict:
                 msg_id = str(msg.id)
                 user_pk = str(msg.user_id)
                 
-                # 내 계정에서 보낸 메시지는 감시 대상 제외 (상대방 메시지만 감시)
                 if user_pk == str(cl.user_id):
                     continue
                 
                 sender_info = users_map.get(user_pk)
                 username = sender_info.username if sender_info else "알 수 없음"
                 fullname = sender_info.full_name if sender_info else username
-                
-                # 텍스트 내용 처리
                 text_content = msg.text if msg.text else f"[{msg.item_type} 미디어/스티커/이모지]"
-                
                 timestamp_str = msg.timestamp.strftime("%Y-%m-%d %H:%M:%S") if getattr(msg, 'timestamp', None) else ""
                 
                 current_messages[msg_id] = {
@@ -116,14 +140,10 @@ def monitor_loop():
     print("📌 원리: 도착한 메시지를 기록해 두었다가, 상대방이 전송 취소하면 텔레그램으로 알림을 보냅니다.")
     print("=" * 60)
     
-    # Render 무료 플랜용 웹 포트 스레드 실행
     t = threading.Thread(target=start_health_check_server, daemon=True)
     t.start()
     
-    # 1. DB 초기화
     init_db()
-    
-    # 2. 인스타 로그인
     cl = login_instagram()
     
     print(f"👀 DM 모니터링을 시작합니다. (감시 주기: {CHECK_INTERVAL}초)")
@@ -133,21 +153,17 @@ def monitor_loop():
     
     while True:
         try:
-            # 3. 현재 인스타 최근 메시지 목록 가져오기
             current_messages = extract_thread_messages(cl, amount_threads=15)
             current_msg_ids = set(current_messages.keys())
             
-            # 4. 이전 모니터링 시점의 DB 내 활성 메시지 목록
             stored_active_map = get_active_messages_map()
             stored_msg_ids = set(stored_active_map.keys())
             
             if first_run:
-                # 첫 실행 시점에는 현재 존재하는 메시지들을 DB에 초기 기입 (알림 쏘지 않음)
                 save_new_messages(list(current_messages.values()))
                 print(f"✅ 초기 메시지 {len(current_messages)}개 동기화 완료.")
                 first_run = False
             else:
-                # 5. [신규 메시지 감지] -> DB에만 살며시 저장
                 new_msg_ids = current_msg_ids - stored_msg_ids
                 if new_msg_ids:
                     new_msgs = [current_messages[mid] for mid in new_msg_ids]
@@ -155,7 +171,6 @@ def monitor_loop():
                     for nm in new_msgs:
                         print(f"📩 [신규 메시지 도착 기록] @{nm['sender_username']}: {nm['text'][:20]}...")
 
-                # 6. [전송 취소/삭제된 메시지 감지!] -> 텔레그램으로 즉시 알림!!
                 deleted_msg_ids = stored_msg_ids - current_msg_ids
                 for d_id in deleted_msg_ids:
                     deleted_msg_info = mark_message_deleted(d_id)
@@ -165,7 +180,6 @@ def monitor_loop():
                         print(f"내용: {deleted_msg_info['text']}")
                         print("!" * 60)
                         
-                        # 텔레그램 알림 발송!
                         alert_deleted_dm(
                             sender_username=deleted_msg_info["sender_username"],
                             sender_fullname=deleted_msg_info["sender_fullname"],
