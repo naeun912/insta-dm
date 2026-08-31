@@ -35,13 +35,12 @@ try:
         "sender_username": "testuser",
         "sender_fullname": "테스트유저",
         "text": "실시간 테스트 메시지",
-        "timestamp": "2026-08-31 14:30:00",
-        "is_group": 0
+        "timestamp": "2026-08-31 14:30:00"
     }
-    db.save_realtime_new_messages([test_msg])
-    print("✅ save_realtime_new_messages() 정상 작동 확인")
+    db.save_new_incoming_messages([test_msg])
+    print("✅ save_new_incoming_messages() 정상 작동 확인")
     
-    monitored = db.get_realtime_monitored_messages("thread_100")
+    monitored = db.get_active_unreported_messages("thread_100")
     assert "test_msg_100" in monitored, "오류: 메시지가 DB 감시 대상에 포함되지 않음"
     print("✅ 활성 메시지 스레드 조회 로직 정상 작동 확인")
     
@@ -64,7 +63,7 @@ except Exception as e:
 try:
     import main
     assert hasattr(main, 'login_instagram')
-    assert hasattr(main, 'extract_all_threads')
+    assert hasattr(main, 'extract_threads')
     assert hasattr(main, 'monitor_loop')
     print("✅ main.py 핵심 구조 및 함수 검증 완료")
 except Exception as e:
