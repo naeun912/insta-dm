@@ -2,6 +2,9 @@ import time
 import sys
 import os
 import json
+import atexit
+import signal
+import traceback
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
@@ -39,12 +42,31 @@ def start_health_check_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
+def log_system_exit(reason="알 수 없음"):
+    """프로그램 종료 직전 상세 로그 및 텔레그램 알림"""
+    kst_now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    msg = f"🛑 [시스템 종료 알림] 시각: {kst_now} (KST) / 원인: {reason}"
+    print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
+    try:
+        send_telegram_message(f"⚠️ <b>[감시 시스템 종료]</b>\n⏰ <b>시간:</b> {kst_now} (KST)\n📌 <b>원인:</b> {reason}")
+    except Exception:
+        pass
+
+def sig_handler(signum, frame):
+    log_system_exit(f"시그널 수신 ({signum}) - 서버 재배포/중지")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, sig_handler)
+signal.signal(signal.SIGINT, sig_handler)
+atexit.register(lambda: log_system_exit("정상 종료 또는 프로세스 중단"))
+
 # instagrapi Import
 try:
     from instagrapi import Client
     from instagrapi.exceptions import TwoFactorRequired, LoginRequired
 except ImportError as e:
-    print(f"❌ instagrapi 라이브러리가 설치되지 않았습니다 ({e}).")
+    err = f"instagrapi 라이브러리가 설치되지 않았습니다 ({e})."
+    log_system_exit(err)
     sys.exit(1)
 
 def login_instagram() -> Client:
@@ -56,13 +78,14 @@ def login_instagram() -> Client:
     session_id = os.getenv("INSTAGRAM_SESSION_ID", "").strip()
     if session_id:
         try:
-            print("🔑 sessionid 쿠키 값으로 인스타그램에 로그인합니다...")
+            print("🔑 sessionid 쿠키 값으로 인스타그램에 로그인합니다...", flush=True)
             cl.login_by_sessionid(session_id)
-            print("🎉 sessionid 쿠키로 로그인 100% 성공! (로그인 알림 및 2FA 요청 없음)")
+            print("🎉 sessionid 쿠키로 로그인 100% 성공! (로그인 알림 및 2FA 요청 없음)", flush=True)
             return cl
         except Exception as e:
-            print(f"❌ sessionid 쿠키 로그인 실패: {e}")
-            print("⚠️ 연속 로그인 알림 방지를 위해 5분간 대기합니다.")
+            err_details = traceback.format_exc()
+            print(f"❌ sessionid 쿠키 로그인 실패:\n{err_details}", flush=True)
+            log_system_exit(f"sessionid 로그인 실패 ({e})")
             time.sleep(300)
             sys.exit(1)
 
@@ -70,40 +93,40 @@ def login_instagram() -> Client:
     session_env = os.getenv("INSTAGRAM_SESSION_SETTINGS", "").strip()
     if session_env:
         try:
-            print("🔄 세션 환경 변수로 로그인을 시도합니다...")
+            print("🔄 세션 환경 변수로 로그인을 시도합니다...", flush=True)
             cl.set_settings(json.loads(session_env))
             cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
-            print("✅ 2FA 세션 환경 변수로 로그인 성공!")
+            print("✅ 2FA 세션 환경 변수로 로그인 성공!", flush=True)
             return cl
         except Exception as e:
-            print(f"⚠️ 세션 환경 변수 로그인 실패: {e}")
+            print(f"⚠️ 세션 환경 변수 로그인 실패: {e}", flush=True)
 
-    # 2. 비밀번호 신규 로그인 시도 (실패 시 5분 휴식)
+    # 2. 비밀번호 신규 로그인 시도
     if not INSTAGRAM_USERNAME or not INSTAGRAM_PASSWORD:
-        print("❌ INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD / INSTAGRAM_SESSION_ID 중 설정이 누락되었습니다.")
+        err_msg = "INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD / INSTAGRAM_SESSION_ID 중 설정이 누락되었습니다."
+        log_system_exit(err_msg)
         sys.exit(1)
         
-    print(f"🔑 인스타그램 계정({INSTAGRAM_USERNAME}) 신규 로그인 시도 중...")
+    print(f"🔑 인스타그램 계정({INSTAGRAM_USERNAME}) 신규 로그인 시도 중...", flush=True)
     try:
         cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
         cl.dump_settings(SESSION_PATH)
-        print("✅ 비밀번호 로그인 성공!")
+        print("✅ 비밀번호 로그인 성공!", flush=True)
         return cl
     except Exception as e:
-        print(f"\n❌ 로그인 시도 실패: {e}")
-        print("⚠️ 폰 알림 폭주 방지를 위해 추가 로그인 시도를 중단하고 5분간 휴식합니다.")
+        err_details = traceback.format_exc()
+        print(f"\n❌ 로그인 시도 실패 상세:\n{err_details}", flush=True)
+        log_system_exit(f"로그인 시도 실패 ({e})")
         time.sleep(300)
         sys.exit(1)
 
 def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
-    """오직 1대1 개인 DM 스레드만 추출"""
     threads_data = {}
     try:
         threads = cl.direct_threads(amount=amount_threads)
         for thread in threads:
             thread_id = str(thread.id)
             
-            # 단체방 제외 검사
             is_group_chat = getattr(thread, 'is_group', False) or len(thread.users) > 1
             if is_group_chat:
                 continue
@@ -115,7 +138,6 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
                 msg_id = str(msg.id)
                 user_pk = str(msg.user_id)
                 
-                # 내가 보낸 메시지는 제외
                 if user_pk == str(cl.user_id):
                     continue
                 
@@ -124,7 +146,6 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
                 fullname = sender_info.full_name if sender_info else username
                 text_content = msg.text if msg.text else f"[{msg.item_type} 미디어/스티커/이모지]"
                 
-                # 한국 시간(KST = UTC+9)으로 시각 변환
                 if getattr(msg, 'timestamp', None):
                     dt_utc = msg.timestamp if msg.timestamp.tzinfo else msg.timestamp.replace(tzinfo=timezone.utc)
                     dt_kst = dt_utc.astimezone(KST)
@@ -145,15 +166,15 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
             
             threads_data[thread_id] = thread_messages
     except Exception as e:
-        print(f"⚠️ 1대1 스레드 메시지 수신 중 오류 발생: {e}")
+        print(f"⚠️ 1대1 스레드 메시지 수신 중 오류 발생: {e}", flush=True)
         
     return threads_data
 
 def monitor_loop():
-    print("=" * 60)
-    print("🚀 인스타그램 개인 DM 삭제 감시 시스템 구동 시작!")
-    print("📌 모드: 오직 1대1 DM / 실행 이후 수신된 DM의 진짜 전송 취소 시 즉시 실시간 알림 / 한국시간(KST)")
-    print("=" * 60)
+    print("=" * 60, flush=True)
+    print("🚀 인스타그램 개인 DM 삭제 감시 시스템 구동 시작!", flush=True)
+    print(f"📌 모드: 3초 초고속 감지 / 오직 1대1 DM / 실행 이후 수신 DM 전송 취소 시 즉시 실시간 알림 / KST", flush=True)
+    print("=" * 60, flush=True)
     
     t = threading.Thread(target=start_health_check_server, daemon=True)
     t.start()
@@ -161,8 +182,7 @@ def monitor_loop():
     init_db()
     cl = login_instagram()
     
-    # 1. 시동 시점 기존 과거 메시지는 baseline 등록
-    print("🔄 초기 1대1 DM 메시지들을 감시 기준점(baseline)으로 등록합니다...")
+    print("🔄 초기 1대1 DM 메시지들을 감시 기준점(baseline)으로 등록합니다...", flush=True)
     initial_threads = extract_one_on_one_threads(cl, amount_threads=15)
     all_initial_msgs = []
     initial_msg_ids = set()
@@ -176,16 +196,16 @@ def monitor_loop():
     start_alert_text = (
         "🎉 <b>[인스타그램 DM 삭제 감시 시스템 구동 시작!]</b>\n\n"
         f"⏰ <b>시작 시각:</b> {kst_start_str} (한국시간)\n"
-        "✅ <b>완벽한 100% 실시간 삭제 감시 동작 중:</b>\n"
-        "1. 기존 과거 메시지는 전부 무시됩니다.\n"
-        "2. <b>지금부터 상대방이 나에게 <u>새로 보낸 DM</u>이 전송 취소(삭제)되는 순간 즉시 텔레그램으로 알려드립니다!</b>\n"
-        "3. 단체방은 제외됩니다."
+        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 초고속 모니터링\n"
+        "✅ <b>100% 실시간 삭제 감시 동작 중:</b>\n"
+        "1. 기존 과거 메시지는 무시됩니다.\n"
+        "2. <b>새로 보낸 DM이 전송 취소(삭제)되는 순간 즉시 텔레그램으로 알려드립니다!</b>"
     )
     send_telegram_message(start_alert_text)
     
-    print("\n" + "🎉" * 30)
-    print(f"✅ 로그인 및 초기화 완료 ({kst_start_str} KST). 오직 진짜 삭제 건에 대해서만 실시간 알림이 발송됩니다.")
-    print("🎉" * 30 + "\n")
+    print("\n" + "🎉" * 30, flush=True)
+    print(f"✅ 로그인 및 초기화 완료 ({kst_start_str} KST). {CHECK_INTERVAL}초 간격으로 실시간 감시 중입니다.", flush=True)
+    print("🎉" * 30 + "\n", flush=True)
     
     consecutive_errors = 0
     
@@ -196,30 +216,25 @@ def monitor_loop():
             
             for thread_id, current_messages in threads_data.items():
                 current_msg_ids = set(current_messages.keys())
-                
-                # 2. 실행 이후 수신되어 현재 감시 중인 1대1 메시지들
                 monitored_map = get_monitored_messages_for_thread(thread_id)
                 monitored_msg_ids = set(monitored_map.keys())
                 
-                # 3. [새로 도착한 DM 발견!] -> 감시 대상으로 새롭게 등록 (is_new_since_start=1)
                 new_incoming_ids = current_msg_ids - initial_msg_ids - monitored_msg_ids
                 if new_incoming_ids:
                     new_msgs = [current_messages[mid] for mid in new_incoming_ids]
                     save_new_incoming_messages(new_msgs)
                     for nm in new_msgs:
-                        print(f"📩 [새 DM 수신] @{nm['sender_username']}: {nm['text'][:20]}...")
+                        print(f"📩 [새 DM 수신] @{nm['sender_username']}: {nm['text'][:20]}...", flush=True)
                 
-                # 4. [감시 대상이던 새 DM이 삭제됨!] -> 100% 진짜 전송 취소!! -> 텔레그램 실시간 발송!
                 deleted_ids = monitored_msg_ids - current_msg_ids
                 for d_id in deleted_ids:
                     deleted_info = mark_message_deleted(d_id)
                     if deleted_info:
-                        print("!" * 60)
-                        print(f"🚨 [100% 진짜 전송 취소 감지!] 보낸사람: @{deleted_info['sender_username']}")
-                        print(f"내용: {deleted_info['text']}")
-                        print("!" * 60)
+                        print("!" * 60, flush=True)
+                        print(f"🚨 [100% 진짜 전송 취소 감지!] 보낸사람: @{deleted_info['sender_username']}", flush=True)
+                        print(f"내용: {deleted_info['text']}", flush=True)
+                        print("!" * 60, flush=True)
                         
-                        # 오직 100% 진짜 삭제 건에 대해서만 텔레그램 실시간 발송!
                         alert_realtime_deleted_dm(
                             sender_username=deleted_info["sender_username"],
                             sender_fullname=deleted_info["sender_fullname"],
@@ -231,13 +246,17 @@ def monitor_loop():
             time.sleep(CHECK_INTERVAL)
             
         except KeyboardInterrupt:
-            print("\n👋 모니터링을 종료합니다.")
+            log_system_exit("사용자 수동 중단 (KeyboardInterrupt)")
             break
         except Exception as e:
             consecutive_errors += 1
-            print(f"⚠️ 감시 루프 오류 발생 ({e}). 에러 횟수: {consecutive_errors}")
+            err_str = traceback.format_exc()
+            print(f"⚠️ 감시 루프 오류 발생 ({e}). 에러 횟수: {consecutive_errors}\n{err_str}", flush=True)
             sleep_time = min(CHECK_INTERVAL * (2 ** consecutive_errors), 300)
             time.sleep(sleep_time)
 
 if __name__ == "__main__":
-    monitor_loop()
+    try:
+        monitor_loop()
+    except Exception as fatal_e:
+        log_system_exit(f"치명적 오류 발생 ({fatal_e})\n{traceback.format_exc()}")
