@@ -23,7 +23,7 @@ from db import (
     get_unreported_deleted_messages,
     mark_deleted_as_reported
 )
-from telegram_notifier import alert_realtime_deleted_dm, send_telegram_message, process_telegram_bot_commands
+from telegram_notifier import alert_realtime_deleted_dm_batch, send_telegram_message, process_telegram_bot_commands
 
 # 한국 표준시 (KST = UTC+9) 설정
 KST = timezone(timedelta(hours=9))
@@ -183,14 +183,12 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
 def monitor_loop():
     print("=" * 60, flush=True)
     print("🚀 인스타그램 개인 DM 삭제 감시 시스템 구동 시작!", flush=True)
-    print(f"📌 모드: 3초 초고속 감지 / 텔레그램 명령어 지원 (/list, @아이디 검색) / KST", flush=True)
+    print(f"📌 모드: 3초 초고속 감지 / 단일 및 다중 삭제 완벽 처리 / 텔레그램 명령어 지원 / KST", flush=True)
     print("=" * 60, flush=True)
     
-    # 1. 헬스체크 웹서버 구동
     t_web = threading.Thread(target=start_health_check_server, daemon=True)
     t_web.start()
     
-    # 2. 텔레그램 인터랙티브 명령어 리스너 구동
     t_cmd = threading.Thread(target=start_telegram_command_listener, daemon=True)
     t_cmd.start()
     
@@ -220,7 +218,7 @@ def monitor_loop():
     send_telegram_message(start_alert_text)
     
     print("\n" + "🎉" * 30, flush=True)
-    print(f"✅ 로그인 및 초기화 완료 ({kst_start_str} KST). 텔레그램 명령어 반응 모드 활성화 완료.", flush=True)
+    print(f"✅ 로그인 및 초기화 완료 ({kst_start_str} KST). 3초 간격으로 다중 삭제 완벽 지원 모드 가동 중.", flush=True)
     print("🎉" * 30 + "\n", flush=True)
     
     consecutive_errors = 0
@@ -243,21 +241,23 @@ def monitor_loop():
                         print(f"📩 [새 DM 수신] @{nm['sender_username']}: {nm['text'][:20]}...", flush=True)
                 
                 deleted_ids = monitored_msg_ids - current_msg_ids
-                for d_id in deleted_ids:
-                    deleted_info = mark_message_deleted(d_id)
-                    if deleted_info:
+                if deleted_ids:
+                    deleted_items = []
+                    for d_id in deleted_ids:
+                        deleted_info = mark_message_deleted(d_id)
+                        if deleted_info:
+                            deleted_items.append(deleted_info)
+                            mark_deleted_as_reported([d_id])
+                    
+                    if deleted_items:
                         print("!" * 60, flush=True)
-                        print(f"🚨 [100% 진짜 전송 취소 감지!] 보낸사람: @{deleted_info['sender_username']}", flush=True)
-                        print(f"내용: {deleted_info['text']}", flush=True)
+                        print(f"🚨 [100% 진짜 전송 취소 감지!] 총 {len(deleted_items)}개 삭제됨.", flush=True)
+                        for item in deleted_items:
+                            print(f" - 보낸사람: @{item['sender_username']} / 내용: {item['text']}", flush=True)
                         print("!" * 60, flush=True)
                         
-                        alert_realtime_deleted_dm(
-                            sender_username=deleted_info["sender_username"],
-                            sender_fullname=deleted_info["sender_fullname"],
-                            text=deleted_info["text"],
-                            timestamp_kst=deleted_info["timestamp"]
-                        )
-                        mark_deleted_as_reported([d_id])
+                        # 1개든 여러 개든 한 묶음으로 깔끔하게 실시간 발송!
+                        alert_realtime_deleted_dm_batch(deleted_items)
 
             time.sleep(CHECK_INTERVAL)
             
