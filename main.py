@@ -23,7 +23,7 @@ from db import (
     get_unreported_deleted_messages,
     mark_deleted_as_reported
 )
-from telegram_notifier import alert_realtime_deleted_dm, send_telegram_message
+from telegram_notifier import alert_realtime_deleted_dm, send_telegram_message, process_telegram_bot_commands
 
 # 한국 표준시 (KST = UTC+9) 설정
 KST = timezone(timedelta(hours=9))
@@ -41,6 +41,16 @@ def start_health_check_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
+
+def start_telegram_command_listener():
+    """텔레그램 대화창 명령어 리스너 (/list, @아이디 검색 등)"""
+    last_offset = 0
+    while True:
+        try:
+            last_offset = process_telegram_bot_commands(last_offset)
+            time.sleep(1)
+        except Exception:
+            time.sleep(2)
 
 def log_system_exit(reason="알 수 없음"):
     """프로그램 종료 직전 상세 로그 및 텔레그램 알림"""
@@ -173,11 +183,16 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
 def monitor_loop():
     print("=" * 60, flush=True)
     print("🚀 인스타그램 개인 DM 삭제 감시 시스템 구동 시작!", flush=True)
-    print(f"📌 모드: 3초 초고속 감지 / 오직 1대1 DM / 실행 이후 수신 DM 전송 취소 시 즉시 실시간 알림 / KST", flush=True)
+    print(f"📌 모드: 3초 초고속 감지 / 텔레그램 명령어 지원 (/list, @아이디 검색) / KST", flush=True)
     print("=" * 60, flush=True)
     
-    t = threading.Thread(target=start_health_check_server, daemon=True)
-    t.start()
+    # 1. 헬스체크 웹서버 구동
+    t_web = threading.Thread(target=start_health_check_server, daemon=True)
+    t_web.start()
+    
+    # 2. 텔레그램 인터랙티브 명령어 리스너 구동
+    t_cmd = threading.Thread(target=start_telegram_command_listener, daemon=True)
+    t_cmd.start()
     
     init_db()
     cl = login_instagram()
@@ -196,15 +211,16 @@ def monitor_loop():
     start_alert_text = (
         "🎉 <b>[인스타그램 DM 삭제 감시 시스템 구동 시작!]</b>\n\n"
         f"⏰ <b>시작 시각:</b> {kst_start_str} (한국시간)\n"
-        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 초고속 모니터링\n"
-        "✅ <b>100% 실시간 삭제 감시 동작 중:</b>\n"
-        "1. 기존 과거 메시지는 무시됩니다.\n"
-        "2. <b>새로 보낸 DM이 전송 취소(삭제)되는 순간 즉시 텔레그램으로 알려드립니다!</b>"
+        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 초고속 모니터링\n\n"
+        "🤖 <b>[사용 가능한 대화창 명령어]</b>\n"
+        "• <code>/list</code> 또는 <code>리스트</code> : 오늘 삭제된 DM 히스토리 전체 출력\n"
+        "• <code>@인스타아이디</code> : 해당 인스타 계정이 삭제한 DM 내역 검색\n"
+        "  <i>(예시: <code>@suho_ov</code>)</i>"
     )
     send_telegram_message(start_alert_text)
     
     print("\n" + "🎉" * 30, flush=True)
-    print(f"✅ 로그인 및 초기화 완료 ({kst_start_str} KST). {CHECK_INTERVAL}초 간격으로 실시간 감시 중입니다.", flush=True)
+    print(f"✅ 로그인 및 초기화 완료 ({kst_start_str} KST). 텔레그램 명령어 반응 모드 활성화 완료.", flush=True)
     print("🎉" * 30 + "\n", flush=True)
     
     consecutive_errors = 0
