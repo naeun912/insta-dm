@@ -25,7 +25,7 @@ from telegram_notifier import alert_realtime_deleted_dm_batch, send_telegram_mes
 # 한국 표준시 (KST = UTC+9) 설정
 KST = timezone(timedelta(hours=9))
 
-# 프로그램 시동 시작 시각 (이 시각 이후에 발송된 DM만 감시 대상!)
+# 프로그램 시동 시작 시각
 SCRIPT_START_TIME = datetime.now(KST)
 
 # Render 무료 웹 서비스 포트 바인딩용 헬스체크 서버
@@ -61,17 +61,16 @@ except ImportError as e:
     sys.exit(1)
 
 def login_instagram() -> Client:
-    """인스타그램 로그인 (sessionid 최우선 및 안전 방어 로직)"""
+    """인스타그램 로그인 (sessionid 최우선 사용)"""
     cl = Client()
     cl.request_timeout = 15
     
-    # 0. INSTAGRAM_SESSION_ID 최우선 사용
     session_id = os.getenv("INSTAGRAM_SESSION_ID", "").strip()
     if session_id:
         try:
             print("🔑 sessionid 쿠키 값으로 인스타그램에 로그인합니다...", flush=True)
             cl.login_by_sessionid(session_id)
-            print("🎉 sessionid 쿠키로 로그인 100% 성공! (로그인 알림 및 2FA 요청 없음)", flush=True)
+            print("🎉 sessionid 쿠키로 로그인 100% 성공!", flush=True)
             return cl
         except Exception as e:
             err_details = traceback.format_exc()
@@ -79,7 +78,6 @@ def login_instagram() -> Client:
             time.sleep(300)
             sys.exit(1)
 
-    # 1. 환경변수 INSTAGRAM_SESSION_SETTINGS
     session_env = os.getenv("INSTAGRAM_SESSION_SETTINGS", "").strip()
     if session_env:
         try:
@@ -91,9 +89,8 @@ def login_instagram() -> Client:
         except Exception as e:
             print(f"⚠️ 세션 환경 변수 로그인 실패: {e}", flush=True)
 
-    # 2. 비밀번호 신규 로그인 시도
     if not INSTAGRAM_USERNAME or not INSTAGRAM_PASSWORD:
-        print("❌ INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD / INSTAGRAM_SESSION_ID 중 설정이 누락되었습니다.", flush=True)
+        print("❌ INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD / INSTAGRAM_SESSION_ID 설정 누락", flush=True)
         sys.exit(1)
         
     print(f"🔑 인스타그램 계정({INSTAGRAM_USERNAME}) 신규 로그인 시도 중...", flush=True)
@@ -109,17 +106,13 @@ def login_instagram() -> Client:
         sys.exit(1)
 
 def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
-    """
-    오직 1대1 개인 DM 스레드만 추출하며, 
-    시동 시각(SCRIPT_START_TIME) 이후에 생성/발송된 신규 DM만 엄격하게 필터링.
-    """
     threads_data = {}
     try:
         threads = cl.direct_threads(amount=amount_threads)
         for thread in threads:
             thread_id = str(thread.id)
             
-            # 1대1 개인 DM 방 검사 (상대방 유저 수가 1명이고 그룹명이 없는 경우)
+            # 1대1 개인 DM 방 검사
             is_group_chat = getattr(thread, 'is_group', False) or getattr(thread, 'named', False) or len(thread.users) > 1
             if is_group_chat:
                 continue
@@ -135,16 +128,14 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
                 if user_pk == str(cl.user_id):
                     continue
                 
-                # 메시지 타임스탬프 변환
                 if getattr(msg, 'timestamp', None):
                     dt_utc = msg.timestamp if msg.timestamp.tzinfo else msg.timestamp.replace(tzinfo=timezone.utc)
                     dt_kst = dt_utc.astimezone(KST)
                 else:
                     dt_kst = datetime.now(KST)
                 
-                # ⭐ [핵심 검증]: 시동 시각(SCRIPT_START_TIME) 이전에 발송된 과거 메시지는 완전 무시!
-                # 30초의 여유 마진 적용 (시동 30초 전까지 수용)
-                if dt_kst < (SCRIPT_START_TIME - timedelta(seconds=30)):
+                # 시동 시각 이전의 과거 메시지는 무시 (5분 여유 수용)
+                if dt_kst < (SCRIPT_START_TIME - timedelta(minutes=5)):
                     continue
                 
                 timestamp_str = dt_kst.strftime("%Y-%m-%d %H:%M:%S")
@@ -174,11 +165,18 @@ def extract_one_on_one_threads(cl: Client, amount_threads: int = 15) -> dict:
 def monitor_loop():
     global SCRIPT_START_TIME
     SCRIPT_START_TIME = datetime.now(KST)
-    
+    kst_start_str = SCRIPT_START_TIME.strftime("%Y-%m-%d %H:%M:%S")
+
+    # 서버 시동 즉시 텔레그램으로 시동 알림부터 전송!
+    send_telegram_message(
+        f"⚡ <b>[인스타그램 DM 감시 서버 가동 시작!]</b>\n"
+        f"⏰ <b>시동 시각:</b> {kst_start_str} (한국시간)\n"
+        f"🔑 인스타그램 계정에 접속하여 실시간 모니터링을 시작합니다."
+    )
+
     print("=" * 60, flush=True)
     print("🚀 인스타그램 개인 DM 실시간 감시 시스템 구동 시작!", flush=True)
-    print(f"📌 시동 시각: {SCRIPT_START_TIME.strftime('%Y-%m-%d %H:%M:%S')} (KST)")
-    print(f"📌 엄격 모드: 시동 시각 이후 발송된 1대1 신규 DM만 정밀 대조 / 3초 감지", flush=True)
+    print(f"📌 시동 시각: {kst_start_str} (KST)", flush=True)
     print("=" * 60, flush=True)
     
     t_web = threading.Thread(target=start_health_check_server, daemon=True)
@@ -190,19 +188,16 @@ def monitor_loop():
     init_db()
     cl = login_instagram()
     
-    kst_start_str = SCRIPT_START_TIME.strftime("%Y-%m-%d %H:%M:%S")
     start_alert_text = (
-        "🎉 <b>[인스타그램 DM 삭제 감시 시스템 구동 시작!]</b>\n\n"
-        f"⏰ <b>시동 시각:</b> {kst_start_str} (한국시간)\n"
-        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 대조\n\n"
-        "🎯 <b>[날짜 & 시간 정밀 대조 엄격 모드 적용 완료]</b>\n"
-        "• 시동 시각 이전의 과거 메시지는 100% 무시됩니다.\n"
-        "• <b>시동 시각({kst_start_str}) 이후 상대방이 보낸 신규 DM이 전송 취소될 때만 정밀 감지합니다.</b>"
+        "🎉 <b>[로그인 100% 성공 및 감시 가동 완료!]</b>\n\n"
+        f"⏰ <b>기준 시각:</b> {kst_start_str} (KST)\n"
+        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 대조\n"
+        "✅ <b>지금부터 상대방이 나에게 보낸 DM이 전송 취소되면 즉시 텔레그램으로 알려드립니다!</b>"
     )
     send_telegram_message(start_alert_text)
     
     print("\n" + "🎉" * 30, flush=True)
-    print(f"✅ 로그인 완료 및 날짜/시간 정밀 대조 1대1 DM 감시 모드 작동 중.", flush=True)
+    print(f"✅ 로그인 완료 및 3초 단위 실시간 1대1 DM 감시 가동 중.", flush=True)
     print("🎉" * 30 + "\n", flush=True)
     
     consecutive_errors = 0
@@ -214,20 +209,16 @@ def monitor_loop():
             
             for thread_id, current_messages in threads_data.items():
                 current_msg_ids = set(current_messages.keys())
-                
-                # DB에 저장되어 있는 시동 이후 감시 대상 메시지들
                 monitored_map = get_monitored_messages_for_thread(thread_id)
                 monitored_msg_ids = set(monitored_map.keys())
                 
-                # 1. 시동 시각 이후 도착한 진짜 신규 DM 발견 ➡️ DB 감시 대상 등록 (is_new_since_start=1)
                 new_incoming_ids = current_msg_ids - monitored_msg_ids
                 if new_incoming_ids:
                     new_msgs = [current_messages[mid] for mid in new_incoming_ids]
                     save_new_realtime_messages(new_msgs)
                     for nm in new_msgs:
-                        print(f"📩 [시동 이후 새 DM 수신] @{nm['sender_username']}: {nm['text'][:20]}... (발송시간: {nm['timestamp']})", flush=True)
+                        print(f"📩 [새 DM 수신] @{nm['sender_username']}: {nm['text'][:20]}... (발송시간: {nm['timestamp']})", flush=True)
                 
-                # 2. 감시 대상이던 신규 DM이 대화방에서 사라짐 ➡️ 100% 진짜 전송 취소(삭제)!
                 deleted_ids = monitored_msg_ids - current_msg_ids
                 if deleted_ids:
                     deleted_items = []
