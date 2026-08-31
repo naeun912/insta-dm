@@ -37,117 +37,82 @@ except ImportError as e:
     sys.exit(1)
 
 def login_instagram() -> Client:
-    """인스타그램 로그인 (sessionid 최우선 및 2FA 지원)"""
+    """인스타그램 로그인 (안전 방어 로직 적용)"""
     cl = Client()
-    cl.request_timeout = 10
+    cl.request_timeout = 15
     
-    # 0. INSTAGRAM_SESSION_ID 가 주어졌을 때 (가장 확실하고 안전함! 2FA 무력화)
+    # 0. INSTAGRAM_SESSION_ID 최우선 사용 (2FA 및 로그인 알림 100% 차단)
     session_id = os.getenv("INSTAGRAM_SESSION_ID", "").strip()
     if session_id:
         try:
             print("🔑 sessionid 쿠키 값으로 인스타그램에 로그인합니다...")
             cl.login_by_sessionid(session_id)
-            print("🎉 sessionid 쿠키로 로그인 100% 성공! (2단계 인증 필요 없음)")
-            cl.dump_settings(SESSION_PATH)
+            print("🎉 sessionid 쿠키로 로그인 100% 성공! (로그인 알림 및 2FA 요청 없음)")
             return cl
         except Exception as e:
-            print(f"⚠️ sessionid 로그인 실패 ({e}). 다른 방식으로 시도합니다.")
+            print(f"❌ sessionid 쿠키 로그인 실패: {e}")
+            print("⚠️ 연속 로그인 알림 방지를 위해 5분간 대기합니다.")
+            time.sleep(300)
+            sys.exit(1)
 
-    # 1. 환경변수 INSTAGRAM_SESSION_SETTINGS가 주어졌을 때
+    # 1. 환경변수 INSTAGRAM_SESSION_SETTINGS
     session_env = os.getenv("INSTAGRAM_SESSION_SETTINGS", "").strip()
     if session_env:
         try:
-            print("🔄 환경 변수에 등록된 세션 설정으로 로그인합니다...")
+            print("🔄 세션 환경 변수로 로그인을 시도합니다...")
             cl.set_settings(json.loads(session_env))
             cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
             print("✅ 2FA 세션 환경 변수로 로그인 성공!")
             return cl
         except Exception as e:
-            print(f"⚠️ 환경 변수 세션 로그인 실패 ({e}). 기본 로그인으로 재시도합니다.")
+            print(f"⚠️ 세션 환경 변수 로그인 실패: {e}")
 
-    # 2. 로컬 session.json 파일이 존재하는 경우
-    if SESSION_PATH.exists():
-        try:
-            print(f"🔄 로컬 세션 파일({SESSION_PATH.name})에서 로그인을 시도합니다...")
-            cl.load_settings(SESSION_PATH)
-            cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
-            print("✅ 로컬 세션 로그인 성공!")
-            return cl
-        except Exception as e:
-            print(f"⚠️ 로컬 세션 로그인 실패 ({e}). 신규 로그인을 진행합니다...")
-
-    # 3. 비밀번호 신규 로그인 시도
+    # 2. 비밀번호 신규 로그인 시도 (알림 도배 방지: 실패 시 즉시 종료/대기)
     if not INSTAGRAM_USERNAME or not INSTAGRAM_PASSWORD:
-        print("❌ INSTAGRAM_USERNAME과 INSTAGRAM_PASSWORD 설정이 누락되었습니다.")
+        print("❌ INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD / INSTAGRAM_SESSION_ID 중 설정이 누락되었습니다.")
         sys.exit(1)
         
     print(f"🔑 인스타그램 계정({INSTAGRAM_USERNAME}) 신규 로그인 시도 중...")
     try:
         cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
+        cl.dump_settings(SESSION_PATH)
+        print("✅ 비밀번호 로그인 성공!")
+        return cl
     except Exception as e:
-        print("\n" + "=" * 60)
-        print("📱 폰 인스타그램 앱으로 [로그인 승인 요청]이 전송되었습니다!")
-        print("⏳ 15초 동안 대기합니다. 폰 인스타 앱에서 [승인] / [예, 제가 맞습니다]를 누르세요.")
-        print("=" * 60)
-        
-        for i in range(15, 0, -1):
-            print(f"\r⏳ 남은 시간: {i}초... (폰에서 [승인] 버튼을 누르세요!)", end="", flush=True)
-            time.sleep(1)
-        print("\n\n🔄 승인 확인 중... 재로그인을 시도합니다.")
-        
-        try:
-            cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
-            print("🎉 폰 승인 확인 완료! 로그인 성공!")
-        except Exception as retry_err:
-            print(f"\n⚠️ 폰 승인 확인 실패 ({retry_err}).")
-            code_input = input("👉 혹시 6자리 보안 코드가 문자로 왔나요? (있으면 6자리 입력, 없으면 Enter): ").strip()
-            if code_input:
-                try:
-                    cl.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, verification_code=code_input)
-                    print("🎉 6자리 코드로 로그인 성공!")
-                except Exception as code_err:
-                    print(f"❌ 로그인 실패: {code_err}")
-                    sys.exit(1)
-            else:
-                print(f"❌ 로그인 실패: {retry_err}")
-                sys.exit(1)
-
-    cl.dump_settings(SESSION_PATH)
-    print("✅ 로그인 성공 및 세션 저장 완료!")
-    return cl
+        print(f"\n❌ 로그인 시도 실패: {e}")
+        print("⚠️ 폰으로 로그인 승인 알림이 폭주하는 것을 방지하기 위해 추가 로그인 시도를 즉시 중단하고 5분간 휴식합니다.")
+        time.sleep(300)
+        sys.exit(1)
 
 def extract_thread_messages(cl: Client, amount_threads: int = 15) -> dict:
     current_messages = {}
-    try:
-        threads = cl.direct_threads(amount=amount_threads)
-        for thread in threads:
-            thread_id = str(thread.id)
-            users_map = {str(u.pk): u for u in thread.users}
+    threads = cl.direct_threads(amount=amount_threads)
+    for thread in threads:
+        thread_id = str(thread.id)
+        users_map = {str(u.pk): u for u in thread.users}
+        
+        for msg in thread.messages:
+            msg_id = str(msg.id)
+            user_pk = str(msg.user_id)
             
-            for msg in thread.messages:
-                msg_id = str(msg.id)
-                user_pk = str(msg.user_id)
-                
-                if user_pk == str(cl.user_id):
-                    continue
-                
-                sender_info = users_map.get(user_pk)
-                username = sender_info.username if sender_info else "알 수 없음"
-                fullname = sender_info.full_name if sender_info else username
-                text_content = msg.text if msg.text else f"[{msg.item_type} 미디어/스티커/이모지]"
-                timestamp_str = msg.timestamp.strftime("%Y-%m-%d %H:%M:%S") if getattr(msg, 'timestamp', None) else ""
-                
-                current_messages[msg_id] = {
-                    "message_id": msg_id,
-                    "thread_id": thread_id,
-                    "sender_id": user_pk,
-                    "sender_username": username,
-                    "sender_fullname": fullname,
-                    "text": text_content,
-                    "timestamp": timestamp_str
-                }
-    except Exception as e:
-        print(f"⚠️ 스레드 메시지 수신 중 오류 발생: {e}")
+            if user_pk == str(cl.user_id):
+                continue
+            
+            sender_info = users_map.get(user_pk)
+            username = sender_info.username if sender_info else "알 수 없음"
+            fullname = sender_info.full_name if sender_info else username
+            text_content = msg.text if msg.text else f"[{msg.item_type} 미디어/스티커/이모지]"
+            timestamp_str = msg.timestamp.strftime("%Y-%m-%d %H:%M:%S") if getattr(msg, 'timestamp', None) else ""
+            
+            current_messages[msg_id] = {
+                "message_id": msg_id,
+                "thread_id": thread_id,
+                "sender_id": user_pk,
+                "sender_username": username,
+                "sender_fullname": fullname,
+                "text": text_content,
+                "timestamp": timestamp_str
+            }
         
     return current_messages
 
@@ -157,21 +122,24 @@ def monitor_loop():
     print("📌 원리: 도착한 메시지를 기록해 두었다가, 상대방이 전송 취소하면 텔레그램으로 알림을 보냅니다.")
     print("=" * 60)
     
+    # 헬스체크 웹서버 구동
     t = threading.Thread(target=start_health_check_server, daemon=True)
     t.start()
     
     init_db()
     cl = login_instagram()
     
-    print(f"👀 DM 모니터링을 시작합니다. (감시 주기: {CHECK_INTERVAL}초)")
+    print(f"👀 DM 모니터링을 정상적으로 시작합니다. (감시 주기: {CHECK_INTERVAL}초)")
     print("💡 일반 DM은 텔레그램으로 보내지 않으며, '삭제된 DM'만 텔레그램 알림이 발송됩니다.")
     
     first_run = True
+    consecutive_errors = 0
     
     while True:
         try:
             current_messages = extract_thread_messages(cl, amount_threads=15)
             current_msg_ids = set(current_messages.keys())
+            consecutive_errors = 0  # 정상 수행 시 에러 카운트 리셋
             
             stored_active_map = get_active_messages_map()
             stored_msg_ids = set(stored_active_map.keys())
@@ -210,8 +178,12 @@ def monitor_loop():
             print("\n👋 모니터링을 종료합니다.")
             break
         except Exception as e:
-            print(f"⚠️ 감시 루프 실행 중 에러 발생: {e}")
-            time.sleep(CHECK_INTERVAL)
+            consecutive_errors += 1
+            print(f"⚠️ 메시지 확인 중 오류 발생 ({e}). 에러 횟수: {consecutive_errors}")
+            # 연속 에러 발생 시 알림 폭주 방지를 위한 대기 시간 증가
+            sleep_time = min(CHECK_INTERVAL * (2 ** consecutive_errors), 300)
+            print(f"⏳ 인스타 알림 보호를 위해 {sleep_time}초 동안 대기 후 다시 확인합니다.")
+            time.sleep(sleep_time)
 
 if __name__ == "__main__":
     monitor_loop()
