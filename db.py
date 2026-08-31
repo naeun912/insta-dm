@@ -57,7 +57,7 @@ def save_baseline_messages(messages: List[dict]):
             cursor.execute("""
                 INSERT OR IGNORE INTO messages 
                 (message_id, my_account, thread_id, thread_title, sender_id, sender_username, sender_fullname, text, timestamp, is_group, is_deleted, reported)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)
             """, (
                 msg["message_id"],
                 msg.get("my_account", ""),
