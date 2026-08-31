@@ -71,14 +71,11 @@ def save_new_incoming_messages(messages: List[dict]):
             ))
         conn.commit()
 
-def get_active_unreported_messages(thread_id: str) -> Dict[str, dict]:
-    """실행 이후 수신된 신규 활성 메시지 맵 반환 (is_deleted=0 AND reported=0)"""
+def get_all_active_unreported_messages() -> Dict[str, dict]:
+    """DB에 저장되어 있는 모든 감시 대상 활성 메시지 맵 반환 (is_deleted=0 AND reported=0)"""
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM messages 
-            WHERE thread_id = ? AND is_deleted = 0 AND reported = 0
-        """, (thread_id,))
+        cursor.execute("SELECT * FROM messages WHERE is_deleted = 0 AND reported = 0")
         rows = cursor.fetchall()
         return {row["message_id"]: dict(row) for row in rows}
 

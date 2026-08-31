@@ -30,7 +30,7 @@ from db import (
     init_db,
     save_baseline_messages,
     save_new_incoming_messages,
-    get_active_unreported_messages,
+    get_all_active_unreported_messages,
     mark_message_deleted
 )
 from telegram_notifier import alert_realtime_deleted_dm_batch, send_telegram_message, process_telegram_bot_commands
@@ -154,7 +154,7 @@ def extract_threads(cl: Client, amount_threads: int = 20, is_initial: bool = Fal
                 else:
                     dt_kst = datetime.now(KST)
                 
-                # ⭐ [날짜/시간 엄격 차단]: 초기 기준점 생성이 아니면, 시동 시각 이전 과거 메시지는 100% 무시!
+                # 시동 시각 이전 과거 메시지는 100% 무시
                 if not is_initial and dt_kst < (SCRIPT_START_TIME - timedelta(seconds=15)):
                     continue
                 
@@ -189,7 +189,7 @@ def monitor_loop():
 
     print("=" * 60, flush=True)
     print("🚀 인스타그램 DM 실시간 삭제 감시 시스템 구동 시작!", flush=True)
-    print(f"📌 시동 시각: {kst_start_str} (KST) / 날짜&시간 엄격 차단 세팅 완비", flush=True)
+    print(f"📌 시동 시각: {kst_start_str} (KST) / 전역 삭제 감지 알고리즘 적용", flush=True)
     print("=" * 60, flush=True)
     
     t_web = threading.Thread(target=start_health_check_server, daemon=True)
@@ -218,8 +218,8 @@ def monitor_loop():
         "🎉 <b>[인스타그램 DM 삭제 감시 시스템 구동 시작!]</b>\n\n"
         f"⏰ <b>시동 시각:</b> {kst_start_str} (한국시간)\n"
         f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 스캔\n"
-        "🎯 <b>[날짜 & 시간 엄격 차단 적용]</b>\n"
-        "시동 시각 이전의 8월 6일, 8월 20일 등 과거 메시지는 100% 무시되며, 오직 시동 시각 이후 보낸 신규 DM만 감시합니다!"
+        "🎯 <b>[전역 삭제 감지 모드 가동 완료]</b>\n"
+        "지금부터 새로 수신된 DM이 전송 취소(삭제)되면 즉시 텔레그램으로 알려드립니다!"
     )
     send_telegram_message(start_alert_text)
     
@@ -236,43 +236,46 @@ def monitor_loop():
             threads_data = extract_threads(cl, amount_threads=20, is_initial=False)
             consecutive_errors = 0
             
-            total_active_dms = 0
-            for thread_id, current_messages in threads_data.items():
-                current_msg_ids = set(current_messages.keys())
-                total_active_dms += len(current_msg_ids)
+            # 모든 현재 스레드의 메시지 집합 모음
+            all_current_msg_ids = set()
+            all_current_messages_map = {}
+            for t_id, msgs in threads_data.items():
+                all_current_msg_ids.update(msgs.keys())
+                all_current_messages_map.update(msgs)
+
+            # DB에 저장된 시동 이후 활성 감시 메시지 집합
+            all_monitored_map = get_all_active_unreported_messages()
+            all_monitored_msg_ids = set(all_monitored_map.keys())
+
+            # 1. 시동 이후 새로 수신된 DM 발견 ➡️ DB 감시 대상 저장 (reported=0)
+            new_incoming_ids = all_current_msg_ids - initial_msg_ids - all_monitored_msg_ids
+            if new_incoming_ids:
+                new_msgs = [all_current_messages_map[mid] for mid in new_incoming_ids]
+                save_new_incoming_messages(new_msgs)
+                for nm in new_msgs:
+                    room_str = f" [👥 {nm['thread_title']}]" if nm['is_group'] == 1 and nm['thread_title'] else ""
+                    print(f"📩 [새 DM 수신 등록!] @{nm['sender_username']}{room_str}: {nm['text']} (시간: {nm['timestamp']})", flush=True)
+
+            # 2. 감시 대상 메시지가 인스타그램 현재 수신함에서 완전 사라짐 ➡️ 100% 진짜 전송 취소(삭제)!!
+            deleted_ids = all_monitored_msg_ids - all_current_msg_ids
+            if deleted_ids:
+                deleted_items = []
+                for d_id in deleted_ids:
+                    deleted_info = mark_message_deleted(d_id)
+                    if deleted_info:
+                        deleted_items.append(deleted_info)
                 
-                monitored_map = get_active_unreported_messages(thread_id)
-                monitored_msg_ids = set(monitored_map.keys())
-                
-                # 시동 이후 새로 수신된 DM 발견 ➡️ DB 감시 대상 저장 (reported=0)
-                new_incoming_ids = current_msg_ids - initial_msg_ids - monitored_msg_ids
-                if new_incoming_ids:
-                    new_msgs = [current_messages[mid] for mid in new_incoming_ids]
-                    save_new_incoming_messages(new_msgs)
-                    for nm in new_msgs:
-                        room_str = f" [👥 {nm['thread_title']}]" if nm['is_group'] == 1 and nm['thread_title'] else ""
-                        print(f"📩 [새 DM 수신 등록!] @{nm['sender_username']}{room_str}: {nm['text']} (시간: {nm['timestamp']})", flush=True)
-                
-                # 감시 대상 메시지가 대화방에서 사라짐 ➡️ 100% 진짜 전송 취소(삭제)!!
-                deleted_ids = monitored_msg_ids - current_msg_ids
-                if deleted_ids:
-                    deleted_items = []
-                    for d_id in deleted_ids:
-                        deleted_info = mark_message_deleted(d_id)
-                        if deleted_info:
-                            deleted_items.append(deleted_info)
+                if deleted_items:
+                    print("!" * 60, flush=True)
+                    print(f"🚨 [100% 진짜 전송 취소 감지!] 총 {len(deleted_items)}개 삭제됨.", flush=True)
+                    for item in deleted_items:
+                        print(f" - 보낸사람: @{item['sender_username']} / 내용: {item['text']}", flush=True)
+                    print("!" * 60, flush=True)
                     
-                    if deleted_items:
-                        print("!" * 60, flush=True)
-                        print(f"🚨 [100% 진짜 전송 취소 감지!] 총 {len(deleted_items)}개 삭제됨.", flush=True)
-                        for item in deleted_items:
-                            print(f" - 보낸사람: @{item['sender_username']} / 내용: {item['text']}", flush=True)
-                        print("!" * 60, flush=True)
-                        
-                        alert_realtime_deleted_dm_batch(deleted_items)
+                    alert_realtime_deleted_dm_batch(deleted_items)
 
             if loop_count % 10 == 0:
-                print(f"🔄 [감시 가동 중] {loop_count}번째 3초 감시 완료 (감시 대화방: {len(threads_data)}개 / 메시지: {total_active_dms}개)", flush=True)
+                print(f"🔄 [감시 가동 중] {loop_count}번째 3초 감시 완료 (감시 중인 대화방: {len(threads_data)}개 / 메시지: {len(all_current_msg_ids)}개)", flush=True)
 
             time.sleep(CHECK_INTERVAL)
             
