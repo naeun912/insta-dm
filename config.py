@@ -11,6 +11,7 @@ load_dotenv(BASE_DIR / ".env")
 # Instagram Credentials
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "")
 INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "")
+INSTAGRAM_SESSION_ID = os.getenv("INSTAGRAM_SESSION_ID", "")
 
 # Telegram Bot Settings
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
