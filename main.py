@@ -1,5 +1,8 @@
 import time
 import sys
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from config import (
     INSTAGRAM_USERNAME,
@@ -9,6 +12,21 @@ from config import (
 )
 from db import init_db, get_active_messages_map, save_new_messages, mark_message_deleted
 from telegram_notifier import alert_deleted_dm
+
+# Render 무료 웹 서비스 포트 바인딩용 헬스체크 서버
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Instagram DM Monitor is Running!")
+    def log_message(self, format, *args):
+        return # 로그 조용히 유지
+
+def start_health_check_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
 
 # instagrapi Import
 try:
@@ -97,6 +115,10 @@ def monitor_loop():
     print("🚀 인스타그램 삭제 DM 감시 시스템 구동 시작!")
     print("📌 원리: 도착한 메시지를 기록해 두었다가, 상대방이 전송 취소하면 텔레그램으로 알림을 보냅니다.")
     print("=" * 60)
+    
+    # Render 무료 플랜용 웹 포트 스레드 실행
+    t = threading.Thread(target=start_health_check_server, daemon=True)
+    t.start()
     
     # 1. DB 초기화
     init_db()
