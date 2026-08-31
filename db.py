@@ -8,7 +8,7 @@ def get_connection():
     return conn
 
 def init_db():
-    """데이터베이스 테이블 초기화"""
+    """데이터베이스 테이블 초기화 및 스키마 마이그레이션"""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -28,6 +28,19 @@ def init_db():
             )
         """)
         conn.commit()
+
+        # 기존 DB 테이블에 신규 컬럼이 없을 경우 자동 추가 마이그레이션
+        for col_name, col_type in [
+            ("is_group", "INTEGER DEFAULT 0"),
+            ("is_new_since_start", "INTEGER DEFAULT 0"),
+            ("is_deleted", "INTEGER DEFAULT 0"),
+            ("reported", "INTEGER DEFAULT 0")
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
+                conn.commit()
+            except Exception:
+                pass  # 이미 컬럼이 존재하는 경우 무시
 
 def get_monitored_messages_for_thread(thread_id: str) -> Dict[str, dict]:
     """프로그램 구동 이후 수신된 신규 1대1 메시지 중 활성 상태인 메시지 맵 반환"""
