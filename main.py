@@ -14,7 +14,7 @@ from config import (
     SESSION_PATH
 )
 
-# ⭐ [최우선 핫픽스]: instagrapi 라이브러리가 인스타그램의 최신 instagram:// 미디어 URL 파싱 시 pydantic ValidationError 로 튕기던 원인 100% 무력화 몽키패치
+# ⭐ instagrapi 최신 미디어 URL pydantic ValidationError 무력화 몽키패치
 import instagrapi.extractors
 original_extract_media_v1_xma = instagrapi.extractors.extract_media_v1_xma
 
@@ -37,6 +37,9 @@ from telegram_notifier import alert_realtime_deleted_dm_batch, send_telegram_mes
 
 # 한국 표준시 (KST = UTC+9) 설정
 KST = timezone(timedelta(hours=9))
+
+# 프로그램 시동 시작 시각
+SCRIPT_START_TIME = datetime.now(KST)
 
 # Render 무료 웹 서비스 포트 바인딩용 헬스체크 서버
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -115,10 +118,10 @@ def login_instagram() -> Client:
         time.sleep(300)
         sys.exit(1)
 
-def extract_threads(cl: Client, amount_threads: int = 20) -> dict:
+def extract_threads(cl: Client, amount_threads: int = 20, is_initial: bool = False) -> dict:
     """
     1대1 및 단체방 포함 모든 direct_threads 스레드 메시지 수집.
-    pydantic ValidationError 우회 몽키패치가 적용되어 단 1개의 오류도 없이 100% 안정 수집.
+    is_initial = False 인 실시간 루프에서는 시동 시각(SCRIPT_START_TIME) 이후 발송된 메시지만 엄격 수집.
     """
     threads_data = {}
     try:
@@ -148,10 +151,14 @@ def extract_threads(cl: Client, amount_threads: int = 20) -> dict:
                 if getattr(msg, 'timestamp', None):
                     dt_utc = msg.timestamp if msg.timestamp.tzinfo else msg.timestamp.replace(tzinfo=timezone.utc)
                     dt_kst = dt_utc.astimezone(KST)
-                    timestamp_str = dt_kst.strftime("%Y-%m-%d %H:%M:%S")
                 else:
-                    timestamp_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+                    dt_kst = datetime.now(KST)
                 
+                # ⭐ [날짜/시간 엄격 차단]: 초기 기준점 생성이 아니면, 시동 시각 이전 과거 메시지는 100% 무시!
+                if not is_initial and dt_kst < (SCRIPT_START_TIME - timedelta(seconds=15)):
+                    continue
+                
+                timestamp_str = dt_kst.strftime("%Y-%m-%d %H:%M:%S")
                 sender_info = users_map.get(user_pk)
                 username = sender_info.username if sender_info else "알 수 없음"
                 fullname = sender_info.full_name if sender_info else username
@@ -176,11 +183,13 @@ def extract_threads(cl: Client, amount_threads: int = 20) -> dict:
     return threads_data
 
 def monitor_loop():
-    kst_start_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    global SCRIPT_START_TIME
+    SCRIPT_START_TIME = datetime.now(KST)
+    kst_start_str = SCRIPT_START_TIME.strftime("%Y-%m-%d %H:%M:%S")
 
     print("=" * 60, flush=True)
     print("🚀 인스타그램 DM 실시간 삭제 감시 시스템 구동 시작!", flush=True)
-    print(f"📌 시동 시각: {kst_start_str} (KST) / pydantic URL 패치 100% 완비", flush=True)
+    print(f"📌 시동 시각: {kst_start_str} (KST) / 날짜&시간 엄격 차단 세팅 완비", flush=True)
     print("=" * 60, flush=True)
     
     t_web = threading.Thread(target=start_health_check_server, daemon=True)
@@ -192,9 +201,9 @@ def monitor_loop():
     init_db()
     cl = login_instagram()
     
-    # 1단계: 시동 시점 수신함 메시지 동기화 (과거 메시지 알림 방지 Baseline)
+    # 1단계: 시동 시점 수신함 메시지 동기화 (Baseline)
     print(f"🔄 시동 시각({kst_start_str}) 기준 수신함 기존 메시지들을 감시 기준점(Baseline)으로 저장합니다...", flush=True)
-    initial_threads = extract_threads(cl, amount_threads=20)
+    initial_threads = extract_threads(cl, amount_threads=20, is_initial=True)
     initial_msg_ids = set()
     all_initial_msgs = []
     
@@ -209,8 +218,8 @@ def monitor_loop():
         "🎉 <b>[인스타그램 DM 삭제 감시 시스템 구동 시작!]</b>\n\n"
         f"⏰ <b>시동 시각:</b> {kst_start_str} (한국시간)\n"
         f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 스캔\n"
-        "✅ <b>최신 인스타그램 URL 이슈 100% 해결 완료!</b>\n"
-        "지금부터 상대방이 나에게 보낸 신규 DM이 전송 취소(삭제)되면 즉시 텔레그램으로 알려드립니다!"
+        "🎯 <b>[날짜 & 시간 엄격 차단 적용]</b>\n"
+        "시동 시각 이전의 8월 6일, 8월 20일 등 과거 메시지는 100% 무시되며, 오직 시동 시각 이후 보낸 신규 DM만 감시합니다!"
     )
     send_telegram_message(start_alert_text)
     
@@ -224,7 +233,7 @@ def monitor_loop():
     while True:
         try:
             loop_count += 1
-            threads_data = extract_threads(cl, amount_threads=20)
+            threads_data = extract_threads(cl, amount_threads=20, is_initial=False)
             consecutive_errors = 0
             
             total_active_dms = 0
