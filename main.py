@@ -44,6 +44,9 @@ KST = timezone(timedelta(hours=9))
 # 전역 기준 시동 시각 (DB 보존)
 SCRIPT_START_TIME = datetime.now(KST)
 
+# 세션 만료 알림 중복 도배 방지용 캐시
+reported_expired_accounts = set()
+
 # Render 무료 웹 서비스 포트 바인딩용 헬스체크 서버 (UptimeRobot 5분 모니터링 대응)
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -102,20 +105,26 @@ def get_session_clients() -> list:
         except Exception as e:
             err_msg = f"❌ [계정 {idx} 세션 만료 / 로그인 실패]: {e}"
             print(err_msg, flush=True)
-            alert_text = (
-                "⚠️ <b>[인스타그램 쿠키 만료 긴급 알림!]</b>\n\n"
-                f"📌 {idx}번 계정의 <code>sessionid</code> 쿠키가 만료되었거나 올바르지 않습니다.\n"
-                "인스타그램에서 새 sessionid 쿠키를 갱신해주셔야 감시가 정상 구동됩니다!"
-            )
-            send_telegram_message(alert_text)
+            if idx not in reported_expired_accounts:
+                reported_expired_accounts.add(idx)
+                alert_text = (
+                    "⚠️ <b>[인스타그램 쿠키 만료 긴급 알림!]</b>\n\n"
+                    f"📌 {idx}번 계정의 <code>sessionid</code> 쿠키가 만료되었거나 올바르지 않습니다.\n"
+                    "인스타그램에서 새 sessionid 쿠키를 갱신해주셔야 감시가 정상 구동됩니다!"
+                )
+                send_telegram_message(alert_text)
             
     return clients
 
 def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 20, is_initial: bool = False) -> dict:
     """
     해당 계정의 1대1 및 단체방 포함 모든 direct_threads 스레드 메시지 수집.
+    세션 만료 시 텔레그램으로 단 1회만 정갈하게 알림 발송 (도배 100% 방지).
     """
     threads_data = {}
+    if username in reported_expired_accounts:
+        return threads_data
+
     try:
         threads = cl.direct_threads(amount=amount_threads)
         for thread in threads:
@@ -176,13 +185,15 @@ def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 
     except Exception as e:
         err_str = str(e).lower()
         if any(keyword in err_str for keyword in ["login", "session", "401", "403", "unauthorized", "fail", "checkpoint", "challenge", "1404006"]):
-            print(f"⚠️ [@{username}] 인스타그램 세션 쿠키 만료/권한 오류 감지!: {e}", flush=True)
-            alert_text = (
-                "⚠️ <b>[인스타그램 쿠키 만료 긴급 알림!]</b>\n\n"
-                f"📌 계정 <b>@{username}</b> 의 sessionid 쿠키가 만료되었거나 인스타그램 보안 403 제한이 발생했습니다.\n"
-                "인스타그램에서 새 sessionid 쿠키를 갱신해주시면 감시가 다시 정상 작동합니다!"
-            )
-            send_telegram_message(alert_text)
+            if username not in reported_expired_accounts:
+                reported_expired_accounts.add(username)
+                print(f"⚠️ [@{username}] 인스타그램 세션 쿠키 만료 감지!: {e}", flush=True)
+                alert_text = (
+                    "⚠️ <b>[인스타그램 쿠키 만료 긴급 알림!]</b>\n\n"
+                    f"📌 계정 <b>@{username}</b> 의 sessionid 쿠키가 만료되었습니다.\n"
+                    "Render 설정에서 새 sessionid 쿠키를 갱신해주시면 감시가 다시 작동합니다!"
+                )
+                send_telegram_message(alert_text)
         else:
             print(f"⚠️ [@{username}] 스레드 수신 중 오류 발생: {e}", flush=True)
         
@@ -219,7 +230,7 @@ def verify_real_deletion(client_map: dict, item: dict) -> bool:
         return True
 
 def monitor_loop():
-    global SCRIPT_START_TIME
+    global SCRIPT_START_TIME, reported_expired_accounts
     init_db()
     
     # DB에 보존된 최초 시동 시간 확인 또는 새로 설정
@@ -277,7 +288,7 @@ def monitor_loop():
         f"⏰ <b>감시 영구 기준 시각:</b> {kst_start_str} (KST)\n"
         f"📱 <b>감시 계정 ({len(clients)}개):</b> {account_names_str}\n"
         f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 순환 감시\n"
-        "🎯 <b>[403 쿠키 만료 감지 및 실시간 DM 캡처 탑재]</b>\n"
+        "🎯 <b>[쿠키 만료 중복 알림 도배 100% 방지 탑재 완료]</b>\n"
         "새로 도착하는 DM 삭제 시 3초 이내 즉시 텔레그램으로 알려드립니다!"
     )
     send_telegram_message(start_alert_text)
