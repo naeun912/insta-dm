@@ -175,12 +175,12 @@ def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 
             threads_data[thread_id] = thread_messages
     except Exception as e:
         err_str = str(e).lower()
-        if "login" in err_str or "session" in err_str or "401" in err_str or "unauthorized" in err_str:
-            print(f"⚠️ [@{username}] 인스타그램 세션 쿠키 만료 감지!: {e}", flush=True)
+        if any(keyword in err_str for keyword in ["login", "session", "401", "403", "unauthorized", "fail", "checkpoint", "challenge", "1404006"]):
+            print(f"⚠️ [@{username}] 인스타그램 세션 쿠키 만료/권한 오류 감지!: {e}", flush=True)
             alert_text = (
                 "⚠️ <b>[인스타그램 쿠키 만료 긴급 알림!]</b>\n\n"
-                f"📌 계정 <b>@{username}</b> 의 sessionid 쿠키가 만료되었습니다.\n"
-                "인스타그램에서 새 sessionid 쿠키를 갱신해주시면 감시가 다시 시작됩니다!"
+                f"📌 계정 <b>@{username}</b> 의 sessionid 쿠키가 만료되었거나 인스타그램 보안 403 제한이 발생했습니다.\n"
+                "인스타그램에서 새 sessionid 쿠키를 갱신해주시면 감시가 다시 정상 작동합니다!"
             )
             send_telegram_message(alert_text)
         else:
@@ -277,7 +277,7 @@ def monitor_loop():
         f"⏰ <b>감시 영구 기준 시각:</b> {kst_start_str} (KST)\n"
         f"📱 <b>감시 계정 ({len(clients)}개):</b> {account_names_str}\n"
         f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 순환 감시\n"
-        "🎯 <b>[2차 100% 스크롤 교차 검증 및 정밀 캡처 탑재]</b>\n"
+        "🎯 <b>[403 쿠키 만료 감지 및 실시간 DM 캡처 탑재]</b>\n"
         "새로 도착하는 DM 삭제 시 3초 이내 즉시 텔레그램으로 알려드립니다!"
     )
     send_telegram_message(start_alert_text)
