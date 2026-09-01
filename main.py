@@ -44,8 +44,9 @@ KST = timezone(timedelta(hours=9))
 # 전역 기준 시동 시각 (DB 보존)
 SCRIPT_START_TIME = datetime.now(KST)
 
-# 세션 만료 알림 중복 도배 방지용 캐시
+# 세션 만료 및 일시 차단 알림 중복 도배 방지용 캐시
 reported_expired_accounts = set()
+blocked_accounts = set()
 
 # Render 무료 웹 서비스 포트 바인딩용 헬스체크 서버 (UptimeRobot 5분 모니터링 대응)
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -120,10 +121,24 @@ def get_session_clients() -> list:
 def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 20, is_initial: bool = False) -> dict:
     """
     해당 계정의 1대1 및 단체방 포함 모든 direct_threads 스레드 메시지 수집.
+    속도 제한(Blocked) 해제 시 자동 감지하여 텔레그램 푸시 알림 및 로그 출력.
     """
     threads_data = {}
     try:
         threads = cl.direct_threads(amount=amount_threads)
+        
+        # 이전 쿨타임/속도 제한(Blocked) 상태였다가 해제 성공 시 텔레그램 알림 및 로그 출력!
+        if username in blocked_accounts:
+            blocked_accounts.remove(username)
+            unblocked_log = f"🎉 [@{username}] 인스타그램 속도 제한(Blocked) 해제 완료! 실시간 DM 감시가 정상 재개되었습니다."
+            print(unblocked_log, flush=True)
+            unblocked_alert = (
+                "🎉 <b>[인스타그램 속도 제한(Blocked) 해제 완료!]</b>\n\n"
+                f"📌 <b>계정:</b> @{username}\n"
+                "인스타그램 일시 차단이 해제되어 실시간 DM 감시가 정상 재개되었습니다! 🚀"
+            )
+            send_telegram_message(unblocked_alert)
+
         # 성공 수집 시 세션 만료 캐시 차단 해제
         reported_expired_accounts.discard(username)
         
@@ -184,8 +199,12 @@ def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 
             threads_data[thread_id] = thread_messages
     except Exception as e:
         err_str = str(e).lower()
-        if any(keyword in err_str for keyword in ["login", "session", "401", "403", "unauthorized", "fail", "checkpoint", "challenge", "1404006"]):
-            if username not in reported_expired_accounts:
+        if "temporarily blocked" in err_str or "too fast" in err_str:
+            if username not in blocked_accounts:
+                blocked_accounts.add(username)
+                print(f"⚠️ [@{username}] 인스타그램 속도 제한(Temporarily Blocked) 감지! 쿨타임 대기 중...", flush=True)
+        elif any(keyword in err_str for keyword in ["login", "session", "401", "403", "unauthorized", "fail", "checkpoint", "challenge", "1404006"]):
+            if username not in reported_expired_accounts and username not in blocked_accounts:
                 reported_expired_accounts.add(username)
                 print(f"⚠️ [@{username}] 인스타그램 세션 쿠키 만료 감지!: {e}", flush=True)
                 alert_text = (
@@ -230,7 +249,7 @@ def verify_real_deletion(client_map: dict, item: dict) -> bool:
         return True
 
 def monitor_loop():
-    global SCRIPT_START_TIME, reported_expired_accounts
+    global SCRIPT_START_TIME, reported_expired_accounts, blocked_accounts
     init_db()
     
     # DB에 보존된 최초 시동 시간 확인 또는 새로 설정
@@ -288,13 +307,13 @@ def monitor_loop():
         f"⏰ <b>감시 영구 기준 시각:</b> {kst_start_str} (KST)\n"
         f"📱 <b>감시 계정 ({len(clients)}개):</b> {account_names_str}\n"
         f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 순환 감시\n"
-        "🎯 <b>[양쪽 계정 실시간 감시 해제 및 감시 보장 탑재 완료]</b>\n"
-        "새로 도착하는 DM 삭제 시 3초 이내 즉시 텔레그램으로 알려드립니다!"
+        "🎯 <b>[속도 제한 해제 실시간 푸시 알림 탑재 완료]</b>\n"
+        "새로 도착하는 DM 삭제 시 즉시 텔레그램으로 알려드립니다!"
     )
     send_telegram_message(start_alert_text)
     
     print("\n" + "🎉" * 30, flush=True)
-    print(f"✅ 총 {len(clients)}개 계정({account_names_str}) 3초 간격 다중 실시간 DM 감시 가동 중.", flush=True)
+    print(f"✅ 총 {len(clients)}개 계정({account_names_str}) {CHECK_INTERVAL}초 간격 다중 실시간 DM 감시 가동 중.", flush=True)
     print("🎉" * 30 + "\n", flush=True)
     
     consecutive_errors = 0
@@ -355,7 +374,7 @@ def monitor_loop():
                     alert_realtime_deleted_dm_batch(deleted_items)
 
             if loop_count % 10 == 0:
-                print(f"🔄 [다중 계정 감시 가동 중] {loop_count}번째 3초 감시 완료 (계정: {account_names_str} / 활성 메시지: {len(all_current_msg_ids)}개)", flush=True)
+                print(f"🔄 [다중 계정 감시 가동 중] {loop_count}번째 {CHECK_INTERVAL}초 감시 완료 (계정: {account_names_str} / 활성 메시지: {len(all_current_msg_ids)}개)", flush=True)
 
             time.sleep(CHECK_INTERVAL)
             
