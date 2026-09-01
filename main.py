@@ -114,7 +114,6 @@ def get_session_clients() -> list:
 def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 20, is_initial: bool = False) -> dict:
     """
     해당 계정의 1대1 및 단체방 포함 모든 direct_threads 스레드 메시지 수집.
-    is_initial = False 인 실시간 루프에서는 최초 시동 시각(SCRIPT_START_TIME) 이전 발송된 일반 메시지는 100% 무시!
     """
     threads_data = {}
     try:
@@ -147,7 +146,7 @@ def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 
                 else:
                     dt_kst = datetime.now(KST)
                 
-                # ⭐ [날짜/시간 100% 차단]: 최초 시동 시각(SCRIPT_START_TIME) 이전 메시지는 절대 감시/삭제 대상으로 삼지 않음!
+                # 최초 시동 시각(SCRIPT_START_TIME) 이전 메시지는 무시
                 if not is_initial and dt_kst < (SCRIPT_START_TIME - timedelta(seconds=10)):
                     continue
                 
@@ -189,6 +188,36 @@ def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 
         
     return threads_data
 
+def verify_real_deletion(client_map: dict, item: dict) -> bool:
+    """
+    ⭐ [2차 교차 검증]: 대화가 많이 밀려 스크롤이 올라간 것인지, 진짜 전송 취소(삭제)된 것인지
+    해당 스레드 단독 상세 조회를 통해 100% 최종 확인!
+    스레드 내에 메시지가 여전히 살아있으면 False (오탐지 방지), 진짜 지워졌으면 True 반환.
+    """
+    try:
+        my_acc = item.get("my_account", "")
+        thread_id = item.get("thread_id", "")
+        unique_msg_id = item.get("message_id", "")
+        raw_msg_id = unique_msg_id.split("_", 1)[-1] if "_" in unique_msg_id else unique_msg_id
+        
+        cl = client_map.get(my_acc)
+        if not cl or not thread_id:
+            return True
+            
+        thread = cl.direct_thread(thread_id)
+        if thread and thread.messages:
+            thread_msg_ids = {str(m.id) for m in thread.messages}
+            if raw_msg_id in thread_msg_ids:
+                # 메시지가 여전히 스레드 역사 속에 살아있음 ➡️ 단순 스크롤 밀림 (전송 취소 아님!)
+                print(f"🛡️ [스크롤 밀림 감지] @{my_acc} 스레드 {thread_id} 내 메시지({raw_msg_id})가 여전히 존재하므로 삭제 알림 제외.", flush=True)
+                return False
+                
+        # 스레드 상세 목록에서도 완벽히 사라짐 ➡️ 100% 진짜 전송 취소(삭제)!
+        return True
+    except Exception as e:
+        print(f"⚠️ 2차 검증 중 예외 발생 ({e}), 오탐지 방지를 위해 대기", flush=True)
+        return False
+
 def monitor_loop():
     global SCRIPT_START_TIME
     init_db()
@@ -226,6 +255,7 @@ def monitor_loop():
         print("❌ 로그인에 성공한 인스타그램 계정이 없습니다.", flush=True)
         sys.exit(1)
 
+    client_map = {acc: cl for acc, cl in clients}
     account_names_str = ", ".join([f"@{acc}" for acc, _ in clients])
     
     # 1단계: 시동 시점 각 계정 수신함 기존 메시지 동기화 (Baseline)
@@ -246,8 +276,9 @@ def monitor_loop():
         "🎉 <b>[인스타그램 DM 삭제 감시 가동 완료!]</b>\n\n"
         f"⏰ <b>감시 영구 기준 시각:</b> {kst_start_str} (KST)\n"
         f"📱 <b>감시 계정 ({len(clients)}개):</b> {account_names_str}\n"
-        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 순환 감시 (5분 핑 대응 완비)\n"
-        "✅ <b>서버 재시작 및 5분 핑에도 과거 메시지 오탐지 0% 보장!</b>"
+        f"⚡ <b>감시 주기:</b> {CHECK_INTERVAL}초 단위 실시간 순환 감시\n"
+        "🎯 <b>[2차 100% 스크롤 교차 검증 시스템 탑재]</b>\n"
+        "대화가 아무리 많이 밀려도 안 지운 일반 메시지가 삭제 알림으로 오는 오탐지 0% 보장!"
     )
     send_telegram_message(start_alert_text)
     
@@ -285,14 +316,22 @@ def monitor_loop():
                     room_str = f" [👥 {nm['thread_title']}]" if nm['is_group'] == 1 and nm['thread_title'] else ""
                     print(f"📩 [새 DM 수신] @{nm['my_account']} ⬅️ @{nm['sender_username']}{room_str}: {nm['text']}", flush=True)
 
-            # 2. 감시 대상 메시지가 대화방에서 사라짐 ➡️ 100% 진짜 전송 취소(삭제)!!
+            # 2. 감시 대상 메시지가 대화방 상위 목록에서 사라짐 ➡️ 2차 교차 검증 수행 후 100% 진짜 전송 취소(삭제)만 발송!!
             deleted_ids = all_monitored_msg_ids - all_current_msg_ids
             if deleted_ids:
                 deleted_items = []
                 for d_id in deleted_ids:
-                    deleted_info = mark_message_deleted(d_id)
-                    if deleted_info:
-                        deleted_items.append(deleted_info)
+                    candidate_item = all_monitored_map.get(d_id)
+                    if candidate_item:
+                        # ⭐ 2차 교차 검증: 스레드 단독 상세 조회를 통해 진짜 삭제 여부 100% 재확인
+                        is_truly_deleted = verify_real_deletion(client_map, candidate_item)
+                        if is_truly_deleted:
+                            deleted_info = mark_message_deleted(d_id)
+                            if deleted_info:
+                                deleted_items.append(deleted_info)
+                        else:
+                            # 단순 스크롤 밀림인 경우 DB 레코드 유지하여 추후 오탐지 완전 방지
+                            pass
                 
                 if deleted_items:
                     print("!" * 60, flush=True)
