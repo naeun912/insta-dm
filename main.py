@@ -220,10 +220,10 @@ def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 
 
 def verify_real_deletion(client_map: dict, item: dict) -> bool:
     """
-    ⭐ [2차 정밀 교차 검증]: 단체방 대화가 폭주해 스크롤이 위로 밀린 것인지, 진짜 전송 취소(삭제)된 것인지
-    해당 스레드의 최근 100개 메시지를 깊이 탐색하여 100% 정확하게 최종 확인!
-    - 스레드 100개 히스토리 내에 메시지가 살아있으면 ➡️ False (스크롤 밀림 오탐지 100% 방지!)
-    - 스레드 100개 히스토리에서도 완전히 사라졌으면 ➡️ True (100% 진짜 전송 취소!)
+    ⭐ [2차 정밀 교차 검증]: 대화가 많이 진행되어 스크롤이 위로 밀린 것인지, 진짜 전송 취소(삭제)된 것인지 최종 확인!
+    - 1시간 이상 지난 과거 메시지 ➡️ 무조건 False (옛날 대화 스크롤 밀림 오탐지 100% 방지!)
+    - 최근 100개 대화 역사 속에 살아있으면 ➡️ False (스크롤 밀림 보존!)
+    - 최근 1시간 이내 메시지이고 100개 역사에서도 완전히 사라졌으면 ➡️ True (100% 진짜 전송 취소!)
     - API 예외/네트워크 타임아웃 발생 시 ➡️ False (오탐지 방지를 위해 알림 보류)
     """
     try:
@@ -232,11 +232,23 @@ def verify_real_deletion(client_map: dict, item: dict) -> bool:
         unique_msg_id = item.get("message_id", "")
         raw_msg_id = unique_msg_id.split("_", 1)[-1] if "_" in unique_msg_id else unique_msg_id
         
+        # 1. 1시간 이상 지난 과거 메시지는 스크롤 밀림으로 처리하여 삭제 알림 100% 무조건 제외!
+        ts_str = item.get("timestamp", "")
+        if ts_str:
+            try:
+                msg_dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST)
+                now_kst = datetime.now(KST)
+                if (now_kst - msg_dt).total_seconds() > 3600:
+                    print(f"🛡️ [과거 대화 보존] @{my_acc} 과거 메시지({ts_str})는 1시간 이상 경과하여 삭제 알림에서 무조건 제외.", flush=True)
+                    return False
+            except Exception:
+                pass
+
         cl = client_map.get(my_acc)
         if not cl or not thread_id:
             return False
             
-        # 최근 100개 메시지 깊이 수집 (단체방 대화 폭주 스크롤 밀림 완벽 대응)
+        # 최근 100개 메시지 깊이 수집 (대화 폭주 스크롤 밀림 완벽 대응)
         thread = cl.direct_thread(thread_id, amount=100)
         if thread and thread.messages:
             thread_msg_ids = {str(m.id) for m in thread.messages}
