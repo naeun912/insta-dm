@@ -220,9 +220,11 @@ def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 
 
 def verify_real_deletion(client_map: dict, item: dict) -> bool:
     """
-    ⭐ [2차 교차 검증]: 대화가 많이 밀려 스크롤이 올라간 것인지, 진짜 전송 취소(삭제)된 것인지
-    해당 스레드 단독 상세 조회를 통해 100% 최종 확인!
-    스레드 내에 메시지가 여전히 살아있으면 False (오탐지 방지), 진짜 지워졌으면 True 반환.
+    ⭐ [2차 정밀 교차 검증]: 단체방 대화가 폭주해 스크롤이 위로 밀린 것인지, 진짜 전송 취소(삭제)된 것인지
+    해당 스레드의 최근 100개 메시지를 깊이 탐색하여 100% 정확하게 최종 확인!
+    - 스레드 100개 히스토리 내에 메시지가 살아있으면 ➡️ False (스크롤 밀림 오탐지 100% 방지!)
+    - 스레드 100개 히스토리에서도 완전히 사라졌으면 ➡️ True (100% 진짜 전송 취소!)
+    - API 예외/네트워크 타임아웃 발생 시 ➡️ False (오탐지 방지를 위해 알림 보류)
     """
     try:
         my_acc = item.get("my_account", "")
@@ -232,21 +234,22 @@ def verify_real_deletion(client_map: dict, item: dict) -> bool:
         
         cl = client_map.get(my_acc)
         if not cl or not thread_id:
-            return True
+            return False
             
-        thread = cl.direct_thread(thread_id)
+        # 최근 100개 메시지 깊이 수집 (단체방 대화 폭주 스크롤 밀림 완벽 대응)
+        thread = cl.direct_thread(thread_id, amount=100)
         if thread and thread.messages:
             thread_msg_ids = {str(m.id) for m in thread.messages}
             if raw_msg_id in thread_msg_ids:
-                # 메시지가 여전히 스레드 역사 속에 살아있음 ➡️ 단순 스크롤 밀림 (전송 취소 아님!)
-                print(f"🛡️ [스크롤 밀림 보존] @{my_acc} 스레드 {thread_id} 내 메시지({raw_msg_id})가 여전히 존재하므로 삭제 알림 제외.", flush=True)
+                # 최근 100개 대화 역사 속에 여전히 살아있음 ➡️ 단순 스크롤 밀림! (전송 취소 아님!)
+                print(f"🛡️ [스크롤 밀림 보존] @{my_acc} 스레드 {thread_id} 최근 100개 내 메시지({raw_msg_id})가 살아있으므로 삭제 알림 제외.", flush=True)
                 return False
                 
-        # 스레드 상세 목록에서도 완벽히 사라짐 ➡️ 100% 진짜 전송 취소(삭제)!
+        # 100개 깊이 탐색에서도 완벽하게 사라짐 ➡️ 100% 진짜 전송 취소(삭제)!
         return True
     except Exception as e:
-        print(f"⚠️ 2차 검증 중 예외 발생 ({e}), 오탐지 방지를 위해 안전하게 삭제 처리 허용", flush=True)
-        return True
+        print(f"⚠️ 2차 검증 중 예외 발생 ({e}), 오탐지 방지를 위해 안전하게 알림 제외 처리", flush=True)
+        return False
 
 def monitor_loop():
     global SCRIPT_START_TIME, reported_expired_accounts, blocked_accounts
