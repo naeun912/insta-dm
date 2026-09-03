@@ -394,6 +394,8 @@ def monitor_loop():
                                 deleted_items.append(deleted_info)
                         else:
                             print(f"  🛡️ [스크롤 밀림 보존]: '{candidate_item.get('text')}'", flush=True)
+                            # ⭐ 스크롤 밀림으로 확인된 메시지는 DB에서 reported=1 처리하여 중복 재검증 및 무더기 알림 100% 완벽 차단!
+                            mark_message_deleted(d_id)
                 
                 if deleted_items:
                     print("!" * 60, flush=True)
