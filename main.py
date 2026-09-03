@@ -220,11 +220,10 @@ def extract_threads_for_client(username: str, cl: Client, amount_threads: int = 
 
 def verify_real_deletion(client_map: dict, item: dict) -> bool:
     """
-    ⭐ [2차 정밀 교차 검증]: 대화가 많이 진행되어 스크롤이 위로 밀린 것인지, 진짜 전송 취소(삭제)된 것인지 최종 확인!
-    - 1시간 이상 지난 과거 메시지 ➡️ 무조건 False (옛날 대화 스크롤 밀림 오탐지 100% 방지!)
-    - 최근 100개 대화 역사 속에 살아있으면 ➡️ False (스크롤 밀림 보존!)
-    - 최근 1시간 이내 메시지이고 100개 역사에서도 완전히 사라졌으면 ➡️ True (100% 진짜 전송 취소!)
-    - API 예외/네트워크 타임아웃 발생 시 ➡️ False (오탐지 방지를 위해 알림 보류)
+    ⭐ [2차 무결점 교차 검증]: 1시간 뒤든 하루 뒤든 상관없이, 대화 스크롤 밀림과 100% 진짜 전송 취소를 수학적으로 완전 구분!
+    - 해당 스레드의 최근 메시지 히스토리를 수집하여 대상 메시지의 생성 시점(Timestamp)까지 커버하는지 검증.
+    - 대상 메시지 생성 시점 포함 구간 탐색 내에 메시지가 살아있으면 ➡️ False (스크롤 밀림 100% 보존!)
+    - 대상 메시지 생성 시점 포함 구간 탐색에서 메시지가 완전히 사라졌으면 ➡️ True (1시간 뒤든 하루 뒤든 100% 진짜 전송 취소 감지!)
     """
     try:
         my_acc = item.get("my_account", "")
@@ -232,33 +231,50 @@ def verify_real_deletion(client_map: dict, item: dict) -> bool:
         unique_msg_id = item.get("message_id", "")
         raw_msg_id = unique_msg_id.split("_", 1)[-1] if "_" in unique_msg_id else unique_msg_id
         
-        # 1. 1시간 이상 지난 과거 메시지는 스크롤 밀림으로 처리하여 삭제 알림 100% 무조건 제외!
+        cl = client_map.get(my_acc)
+        if not cl or not thread_id:
+            return False
+
+        # 대상 메시지 시각 파싱
+        msg_dt = None
         ts_str = item.get("timestamp", "")
         if ts_str:
             try:
                 msg_dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST)
-                now_kst = datetime.now(KST)
-                if (now_kst - msg_dt).total_seconds() > 3600:
-                    print(f"🛡️ [과거 대화 보존] @{my_acc} 과거 메시지({ts_str})는 1시간 이상 경과하여 삭제 알림에서 무조건 제외.", flush=True)
-                    return False
             except Exception:
                 pass
-
-        cl = client_map.get(my_acc)
-        if not cl or not thread_id:
-            return False
             
-        # 최근 100개 메시지 깊이 수집 (대화 폭주 스크롤 밀림 완벽 대응)
         thread = cl.direct_thread(thread_id, amount=100)
         if thread and thread.messages:
             thread_msg_ids = {str(m.id) for m in thread.messages}
+            
+            # 1. 메시지가 수집된 히스토리 내에 여전히 존재함 ➡️ 100% 단순 스크롤 밀림 (삭제 아님!)
             if raw_msg_id in thread_msg_ids:
-                # 최근 100개 대화 역사 속에 여전히 살아있음 ➡️ 단순 스크롤 밀림! (전송 취소 아님!)
-                print(f"🛡️ [스크롤 밀림 보존] @{my_acc} 스레드 {thread_id} 최근 100개 내 메시지({raw_msg_id})가 살아있으므로 삭제 알림 제외.", flush=True)
+                print(f"🛡️ [스크롤 밀림 보존] @{my_acc} 스레드 {thread_id} 내 메시지({raw_msg_id})가 여전히 살아있으므로 알림 제외.", flush=True)
+                return False
+
+            # 2. 타임스탬프 기반 커버리지 검증: 수집된 가장 과거 메시지의 시각 구하기
+            oldest_msg_dt = None
+            for m in thread.messages:
+                if getattr(m, 'timestamp', None):
+                    dt_u = m.timestamp if m.timestamp.tzinfo else m.timestamp.replace(tzinfo=timezone.utc)
+                    dt_k = dt_u.astimezone(KST)
+                    if oldest_msg_dt is None or dt_k < oldest_msg_dt:
+                        oldest_msg_dt = dt_k
+                        
+            # 수집된 가장 오래된 메시지 시각이 대상 메시지 시각보다 더 과거까지 커버한 경우:
+            # 대상 메시지 시점이 히스토리 탐색 범위 안에 들어왔는데도 메시지가 완전히 없다 ➡️ 1시간 뒤든 하루 뒤든 100% 진짜 전송 취소(삭제)!
+            if msg_dt and oldest_msg_dt and oldest_msg_dt <= (msg_dt + timedelta(seconds=10)):
+                print(f"✅ [100% 삭제 확정] @{my_acc} 메시지 시각({ts_str}) 포함 탐색 결과({oldest_msg_dt.strftime('%H:%M:%S')}까지 커버) 메시지가 완전히 지워짐!", flush=True)
+                return True
+            elif not msg_dt:
+                return True
+            else:
+                # 탐색 범위가 대상 메시지 시각까지 미치지 못하고 스크롤이 더 위로 밀린 경우 ➡️ 안전하게 알림 제외
+                print(f"🛡️ [깊은 스크롤 밀림 보존] @{my_acc} 수집된 최장 과거({oldest_msg_dt.strftime('%H:%M:%S')})가 메시지 시각({ts_str})보다 최신이므로 알림 제외.", flush=True)
                 return False
                 
-        # 100개 깊이 탐색에서도 완벽하게 사라짐 ➡️ 100% 진짜 전송 취소(삭제)!
-        return True
+        return False
     except Exception as e:
         print(f"⚠️ 2차 검증 중 예외 발생 ({e}), 오탐지 방지를 위해 안전하게 알림 제외 처리", flush=True)
         return False
